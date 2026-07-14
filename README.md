@@ -60,9 +60,18 @@ partner_varios_id      <id del partner "Clientes Varios" en Odoo>
 ODOO_COMPANY_ID         <id de la compañía Odoo de ESTA propiedad, p.ej. Ibiza Rocks House>
 FISCAL_POSITION_ID     <id de la posición fiscal "España Península" en Odoo>
 ANALYTIC_ACCOUNT_ID    <id de la cuenta analítica, se aplica al 100% en cada línea>
+BILL_TYPE_EXCLUIR      <opcional, códigos de "Bill type code" a excluir, separados por |, ej. HIP>
 FOLDER_ID_INBOX         <id carpeta Drive de entrada>
 FOLDER_ID_PROCESADOS    <id carpeta Drive de archivo>
 ```
+
+`BILL_TYPE_EXCLUIR`: opcional. Mews tiene bills técnicos internos (ej.
+"Tests / Cross-settlements", que siempre netean a 0) marcados con un
+`Bill type code` propio (ej. `HIP`). Por defecto no se excluye nada —
+si no lo configuras, esos bills intentarán convertirse en factura y
+probablemente fallen con "Serie X sin diario en CONFIG" (ruidoso pero
+no peligroso). Si quieres que se salten en silencio, añade su código
+aquí, ej. `BILL_TYPE_EXCLUIR = HIP`.
 
 `ANALYTIC_ACCOUNT_ID`: obligatoria. Es una única cuenta fija que se
 aplica al 100% de cada línea de cada factura — no varía según el tipo
@@ -162,3 +171,10 @@ falta un sistema en paralelo.
   y se excluían en silencio del cálculo de huecos — saliendo como
   huecos falsos aunque la factura sí existiera. Ahora no se asume
   ninguna fila reservada: todo lo que hay bajo la cabecera cuenta.
+- La serie se sacaba solo leyendo el texto de `Bill` (letras+espacio+
+  número). Bills reales como "Cancellations 0000053" tienen serie PHC
+  según el campo `Bill type code` de Mews, pero su texto no encaja en
+  ese patrón — se perdían en silencio. Ahora se usa `Bill type code`
+  como fuente fiable (con el texto como respaldo si viene vacío), y
+  estos bills con numeración propia (no correlativa) se excluyen del
+  cálculo de huecos de la serie normal en vez de mezclarse con ella.

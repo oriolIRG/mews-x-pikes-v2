@@ -40,15 +40,33 @@ function parsearClosed(data) {
   for (const [bill, lineas] of Object.entries(grupos)) {
     if (yaRegistradas.has(bill) || yaRegistradasLineas.has(bill)) continue;
 
+    const primeraLinea = lineas[0];
+    const billTypeCode = String(primeraLinea['Bill type code'] || '').trim();
+    const serieTexto = extraerSerie(bill);
+
+    // Exclusión explícita por tipo (ej. "HIP" de Tests/Cross-settlements
+    // internos de Mews que siempre netean a 0). Vacío por defecto — no
+    // cambia nada hasta que se añada BILL_TYPE_EXCLUIR en CONFIG.
+    const excluidosBillType = (cfg['BILL_TYPE_EXCLUIR'] || '').split('|').map(s => s.trim()).filter(Boolean);
+    if (billTypeCode && excluidosBillType.includes(billTypeCode)) {
+      Logger.log(`SKIP bill type excluido (${billTypeCode}): ` + bill);
+      continue;
+    }
+
+    // Serie por prioridad: el campo que da Mews directamente en
+    // "Bill type code" (fiable) y, si viene vacío, el texto del Bill
+    // como respaldo. Antes solo se miraba el texto, y bills como
+    // "Cancellations 0000053" (que Mews SÍ marca como PHC en este
+    // campo) se perdían en silencio porque el texto no encaja en el
+    // patrón "LETRAS espacio NÚMERO".
     const billOdoo = formatearNumeroFactura(bill);
-    const serie = extraerSerie(bill);
+    const serie = billTypeCode || serieTexto;
     if (!serie) {
       Logger.log('SKIP bill sin serie: ' + bill);
       continue;
     }
 
-    const esPB = lineas[0]['Bill type code'] === 'PB';
-    const primeraLinea = lineas[0];
+    const esPB = billTypeCode === 'PB';
     const importeTotal = lineas.reduce((s, l) => s + (parseFloat(l['Amount']) || 0), 0);
     const clienteNif = String(primeraLinea['Associated tax ID'] || '').trim();
     const clienteNombre = String(primeraLinea['Owner'] || '').trim();
@@ -396,9 +414,17 @@ function reordenarYRecalcularContinuidad() {
   for (const fila of filasDatos) {
     const serie = String(fila[colSerie] || '');
     const num = parseInt(fila[colNum]) || 0;
-    const esPB = String(fila[colBill] || '').startsWith('PAYMENT BILL');
+    const billMews = String(fila[colBill] || '');
+    const esPB = billMews.startsWith('PAYMENT BILL');
+
+    // "Numeración propia": el texto del Bill no encaja con la serie
+    // resuelta (ej. "Cancellations 0000053" resuelta como PHC vía
+    // Bill type code). Tiene su propio contador aparte — no se puede
+    // mezclar con la numeración correlativa normal de esa serie.
+    const numeracionPropia = !esPB && serie && extraerSerie(billMews) !== serie;
 
     if (esPB || !serie || serie === 'PB') { fila[colCont] = '—'; continue; }
+    if (numeracionPropia) { fila[colCont] = '↪ numeración propia'; continue; }
 
     if (ultimoPorSerie[serie] === undefined) {
       fila[colCont] = '🆕 primera';
@@ -439,8 +465,10 @@ function actualizarHuecos(filasDatos, headers) {
   for (const fila of filasDatos) {
     const serie = String(fila[colSerie] || '');
     const num = parseInt(fila[colNum]) || 0;
-    const esPB = String(fila[colBill] || '').startsWith('PAYMENT BILL');
-    if (esPB || !serie || serie === 'PB' || num === 0) continue;
+    const billMews = String(fila[colBill] || '');
+    const esPB = billMews.startsWith('PAYMENT BILL');
+    const numeracionPropia = !esPB && serie && extraerSerie(billMews) !== serie;
+    if (esPB || !serie || serie === 'PB' || numeracionPropia || num === 0) continue;
 
     if (ultimoPorSerie[serie] !== undefined) {
       const esperado = ultimoPorSerie[serie] + 1;
