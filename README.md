@@ -171,10 +171,34 @@ falta un sistema en paralelo.
   y se excluían en silencio del cálculo de huecos — saliendo como
   huecos falsos aunque la factura sí existiera. Ahora no se asume
   ninguna fila reservada: todo lo que hay bajo la cabecera cuenta.
+- `formatearNumeroFactura()` devolvía el texto crudo del `Bill` cuando
+  no reconocía el patrón, así que "Cancellations 0000053" (serie PHC
+  real, vía `Bill type code`) llegaba a Odoo con ese nombre literal en
+  vez de algo con sentido. Ahora, cuando el texto no coincide con la
+  serie resuelta, se construye el nombre con la serie real + el número
+  (ej. "PHC 0000053") — sin tocar el formato de PHF/RPHF, que ya
+  salían bien porque ahí el texto sí coincidía con la serie.
+- Al reescribir el proyecto se perdió el respaldo a `Owner tax ID`
+  cuando `Associated tax ID` viene vacío (el repo original sí lo tenía
+  como segunda fuente de NIF). No cambiaba nada en el JSON de prueba
+  concreto (ambos campos vacíos ahí), pero sí podía perder NIFs reales
+  en otros días. Ahora se combinan los dos al parsear.
+- Se detectó un caso real de error operativo: bills con líneas de
+  `Payment` pero SIN ninguna línea `Revenue` (ej. un reembolso
+  registrado sin la factura/abono correspondiente). Estos nunca
+  llegan a FACTURAS porque no hay nada que facturar, así que antes
+  pasaban completamente desapercibidos. Ahora se avisan como filas
+  `⚠️` en `HUECOS_NUMERACION` (se preservan entre recálculos, a
+  diferencia de los huecos normales que sí se recalculan cada vez).
+  Respeta `BILL_TYPE_EXCLUIR` y no avisa de "Payment Bill" (PB), que
+  por diseño son solo-pago y no es un error.
 - La serie se sacaba solo leyendo el texto de `Bill` (letras+espacio+
   número). Bills reales como "Cancellations 0000053" tienen serie PHC
   según el campo `Bill type code` de Mews, pero su texto no encaja en
   ese patrón — se perdían en silencio. Ahora se usa `Bill type code`
-  como fuente fiable (con el texto como respaldo si viene vacío), y
-  estos bills con numeración propia (no correlativa) se excluyen del
-  cálculo de huecos de la serie normal en vez de mezclarse con ella.
+  como fuente fiable (con el texto como respaldo si viene vacío). Estos
+  bills con numeración propia (secuencia separada de la serie normal,
+  ej. cancelaciones con su propio contador 0XXXXXX frente al 2000XXX
+  normal) se comprueban como su propia secuencia independiente — se
+  siguen detectando huecos, solo que sin mezclarse con la numeración
+  correlativa normal de esa serie.

@@ -59,16 +59,20 @@ function parsearClosed(data) {
     // "Cancellations 0000053" (que Mews SÍ marca como PHC en este
     // campo) se perdían en silencio porque el texto no encaja en el
     // patrón "LETRAS espacio NÚMERO".
-    const billOdoo = formatearNumeroFactura(bill);
     const serie = billTypeCode || serieTexto;
     if (!serie) {
       Logger.log('SKIP bill sin serie: ' + bill);
       continue;
     }
+    const billOdoo = formatearNumeroFactura(bill, serie);
 
     const esPB = billTypeCode === 'PB';
     const importeTotal = lineas.reduce((s, l) => s + (parseFloat(l['Amount']) || 0), 0);
-    const clienteNif = String(primeraLinea['Associated tax ID'] || '').trim();
+    // Associated tax ID es el NIF principal; Owner tax ID es el
+    // respaldo si el primero viene vacío (se perdía en la reescritura
+    // anterior — Odoo se quedaba sin NIF aunque Mews sí lo tuviera en
+    // el segundo campo).
+    const clienteNif = String(primeraLinea['Associated tax ID'] || primeraLinea['Owner tax ID'] || '').trim();
     const clienteNombre = String(primeraLinea['Owner'] || '').trim();
     const vatRate = String(primeraLinea['VAT rate']);
     const reservationNum = String(primeraLinea['Reservation number'] || '').trim();
@@ -122,8 +126,66 @@ function parsearClosed(data) {
   }
 
   reordenarYRecalcularContinuidad();
+  avisarBillsSoloPago(items, cfg);
 
   return { nFacturas: nuevasFacturas.length, nLineas: nuevasLineas.length };
+}
+
+// ── Detectar bills "solo con pagos" (sin ninguna línea Revenue) ────
+// Error operativo real (confirmado): un bill nunca debería tener
+// líneas de Payment sin ninguna línea de Revenue — significa que se
+// registró un cobro/reembolso sin la factura o abono correspondiente.
+// Estos bills NUNCA llegan a FACTURAS (no hay nada que facturar), así
+// que no se pueden detectar desde ahí — hay que mirarlo aquí, con el
+// JSON original en la mano, y dejar aviso en HUECOS_NUMERACION.
+// Los "Payment Bill" (PB) y cualquier tipo en BILL_TYPE_EXCLUIR se
+// excluyen: esos ya se ignoran a propósito, no es un error.
+function avisarBillsSoloPago(items, cfg) {
+  const excluidosBillType = (cfg['BILL_TYPE_EXCLUIR'] || '').split('|').map(s => s.trim()).filter(Boolean);
+
+  const billsConRevenue = new Set();
+  const primeraLineaPorBill = {};
+  for (const item of items) {
+    const bill = String(item['Bill'] || '').trim();
+    if (!bill) continue;
+    if (item['Type'] === 'Revenue') billsConRevenue.add(bill);
+    if (!primeraLineaPorBill[bill]) primeraLineaPorBill[bill] = item;
+  }
+
+  const sospechosos = [];
+  for (const [bill, item] of Object.entries(primeraLineaPorBill)) {
+    if (billsConRevenue.has(bill)) continue;
+    const billTypeCode = String(item['Bill type code'] || '').trim();
+    if (!billTypeCode || billTypeCode === 'PB' || excluidosBillType.includes(billTypeCode)) continue;
+    sospechosos.push({ bill, billTypeCode });
+  }
+  if (sospechosos.length === 0) return;
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let wsHuecos = ss.getSheetByName(TAB.HUECOS);
+  if (!wsHuecos) {
+    wsHuecos = ss.insertSheet(TAB.HUECOS);
+    wsHuecos.getRange(1, 1, 1, 5).setValues([['serie', 'desde', 'hasta', 'num_faltantes', 'detectado']]);
+    wsHuecos.getRange(1, 1, 1, 5).setFontWeight('bold');
+    wsHuecos.setFrozenRows(1);
+  }
+
+  const yaAvisados = new Set(
+    wsHuecos.getLastRow() > 1
+      ? wsHuecos.getRange(2, 1, wsHuecos.getLastRow() - 1, 1).getValues().map(r => String(r[0]))
+      : []
+  );
+
+  const nuevasFilas = [];
+  for (const { bill, billTypeCode } of sospechosos) {
+    const etiqueta = `⚠️ ${billTypeCode} SOLO PAGOS, sin factura — "${bill}"`;
+    if (yaAvisados.has(etiqueta)) continue;
+    nuevasFilas.push([etiqueta, '', '', '', ahora()]);
+  }
+
+  if (nuevasFilas.length > 0) {
+    wsHuecos.getRange(wsHuecos.getLastRow() + 1, 1, nuevasFilas.length, 5).setValues(nuevasFilas);
+  }
 }
 
 // ── 2. Procesar todos los JSONs pendientes en Drive ────────────────
@@ -367,9 +429,21 @@ function extraerNumeroFactura(bill) {
 // (ej. "RPHF Credit Notes RPHF000054") sí engancha y da "RPHF/000054".
 // Es una inconsistencia real, pero decidido a propósito: para 2026 se
 // sigue como está (ya viene así en producción), se revisa en 2027.
-function formatearNumeroFactura(bill) {
+function formatearNumeroFactura(bill, serieResuelta) {
   const s = String(bill || '').trim();
   if (s.startsWith('PAYMENT BILL')) return 'PB/' + parseInt(s.replace('PAYMENT BILL', '').trim());
+
+  // Si el texto del Bill no encaja con la serie resuelta (ej.
+  // "Cancellations 0000053" resuelta como PHC vía Bill type code),
+  // usar el texto tal cual da un nombre engañoso. Se construye con la
+  // serie real + el número, mismo estilo con espacio que las facturas
+  // normales — sin tocar PHF/RPHF, que ya salían bien porque ahí el
+  // texto SÍ coincide con la serie resuelta.
+  if (serieResuelta && extraerSerie(s) !== serieResuelta) {
+    const digitos = s.match(/\d+$/);
+    if (digitos) return `${serieResuelta} ${digitos[0]}`;
+  }
+
   const tokenConBarra = s.split(/\s+/).find(t => t.includes('/'));
   if (tokenConBarra) return tokenConBarra;
   const m = s.match(/([A-Z]+)(\d+)$/);
@@ -419,22 +493,25 @@ function reordenarYRecalcularContinuidad() {
 
     // "Numeración propia": el texto del Bill no encaja con la serie
     // resuelta (ej. "Cancellations 0000053" resuelta como PHC vía
-    // Bill type code). Tiene su propio contador aparte — no se puede
-    // mezclar con la numeración correlativa normal de esa serie.
+    // Bill type code). No es la misma secuencia correlativa que la
+    // serie normal (2000XXX vs 0XXXXXX en Odoo), así que se sigue
+    // por separado — pero SÍ se le comprueban huecos, con su propio
+    // contador ("bucket"), no se descarta sin más.
     const numeracionPropia = !esPB && serie && extraerSerie(billMews) !== serie;
+    const bucket = numeracionPropia ? `${serie}::PROPIA` : serie;
+    const sufijo = numeracionPropia ? ' (numeración propia)' : '';
 
     if (esPB || !serie || serie === 'PB') { fila[colCont] = '—'; continue; }
-    if (numeracionPropia) { fila[colCont] = '↪ numeración propia'; continue; }
 
-    if (ultimoPorSerie[serie] === undefined) {
-      fila[colCont] = '🆕 primera';
+    if (ultimoPorSerie[bucket] === undefined) {
+      fila[colCont] = '🆕 primera' + sufijo;
     } else {
-      const esperado = ultimoPorSerie[serie] + 1;
-      if (num === esperado) fila[colCont] = '✅';
-      else if (num > esperado) fila[colCont] = `⚠️ salto: falta ${esperado}→${num - 1}`;
-      else fila[colCont] = `⚠️ duplicado o anterior`;
+      const esperado = ultimoPorSerie[bucket] + 1;
+      if (num === esperado) fila[colCont] = '✅' + sufijo;
+      else if (num > esperado) fila[colCont] = `⚠️ salto: falta ${esperado}→${num - 1}` + sufijo;
+      else fila[colCont] = `⚠️ duplicado o anterior` + sufijo;
     }
-    ultimoPorSerie[serie] = num;
+    ultimoPorSerie[bucket] = num;
   }
 
   const numCols = headers.length;
@@ -451,8 +528,19 @@ function actualizarHuecos(filasDatos, headers) {
     wsHuecos.getRange(1, 1, 1, 5).setValues([['serie', 'desde', 'hasta', 'num_faltantes', 'detectado']]);
     wsHuecos.getRange(1, 1, 1, 5).setFontWeight('bold');
     wsHuecos.setFrozenRows(1);
-  } else if (wsHuecos.getLastRow() > 1) {
+  }
+
+  // Los avisos de "SOLO PAGOS" (marcados con ⚠️, ver avisarBillsSoloPago)
+  // no se recalculan desde FACTURAS como los huecos normales — se
+  // preservan tal cual entre recálculos, en vez de borrarse.
+  let avisosPrevios = [];
+  if (wsHuecos.getLastRow() > 1) {
+    const existentes = wsHuecos.getRange(2, 1, wsHuecos.getLastRow() - 1, 5).getValues();
+    avisosPrevios = existentes.filter(r => String(r[0]).startsWith('⚠️'));
     wsHuecos.getRange(2, 1, wsHuecos.getLastRow() - 1, 5).clearContent();
+  }
+  if (avisosPrevios.length > 0) {
+    wsHuecos.getRange(2, 1, avisosPrevios.length, 5).setValues(avisosPrevios);
   }
 
   const colSerie = headers.indexOf('serie');
@@ -468,15 +556,18 @@ function actualizarHuecos(filasDatos, headers) {
     const billMews = String(fila[colBill] || '');
     const esPB = billMews.startsWith('PAYMENT BILL');
     const numeracionPropia = !esPB && serie && extraerSerie(billMews) !== serie;
-    if (esPB || !serie || serie === 'PB' || numeracionPropia || num === 0) continue;
+    if (esPB || !serie || serie === 'PB' || num === 0) continue;
 
-    if (ultimoPorSerie[serie] !== undefined) {
-      const esperado = ultimoPorSerie[serie] + 1;
+    const bucket = numeracionPropia ? `${serie}::PROPIA` : serie;
+    const etiqueta = numeracionPropia ? `${serie} (numeración propia)` : serie;
+
+    if (ultimoPorSerie[bucket] !== undefined) {
+      const esperado = ultimoPorSerie[bucket] + 1;
       if (num > esperado) {
-        huecos.push([serie, esperado, num - 1, num - esperado, ahora()]);
+        huecos.push([etiqueta, esperado, num - 1, num - esperado, ahora()]);
       }
     }
-    ultimoPorSerie[serie] = num;
+    ultimoPorSerie[bucket] = num;
   }
 
   if (huecos.length > 0) {
