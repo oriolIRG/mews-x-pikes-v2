@@ -11,11 +11,14 @@
  *        - factura > UMBRAL_CREACION_CLIENTE (CONFIG, por defecto 3000€)
  *          → se crea el cliente nuevo en Odoo
  *        - factura ≤ umbral → NO se crea; va a "Clientes Varios"
- *   5. No hay CIF en absoluto                         → partner "Varios"
+ *   5. No hay CIF en absoluto, pero SÍ hay nombre (Owner) y la factura
+ *      supera el umbral → se intenta emparejar por nombre exacto en
+ *      Odoo antes de crear un cliente nuevo (sin NIF, como persona)
+ *   6. Ni CIF ni nombre, o no supera el umbral                → "Clientes Varios"
  *
- *  El umbral SOLO aplica al paso 4 (creación de cliente nuevo). Si el
- *  cliente ya existe por cualquier otra vía (agencia, caché, o ya
- *  estaba en Odoo), se usa igual sin importar el importe.
+ *  El umbral SOLO aplica a los pasos 4 y 5 (creación de cliente
+ *  nuevo). Si el cliente ya existe por cualquier otra vía (agencia,
+ *  caché, o ya estaba en Odoo), se usa igual sin importar el importe.
  * ================================================================
  */
 
@@ -122,15 +125,29 @@ function resolverPartner(cfg, uid, agencia, nif, ownerNombre, ownerNif, fallback
         };
       } catch (e) {
         Logger.log('ERROR creando partner sin NIF ' + nombreGuest + ': ' + e.message);
-        // cae a Varios abajo
+        return {
+          partnerId: parseInt(fallbackId),
+          origen: 'VARIOS_CREACION_FALLIDA_SIN_NIF',
+          detalle: `Se intentó crear "${nombreGuest}" sin NIF pero Odoo dio error: ${e.message} → Clientes Varios`
+        };
       }
     }
+
+    // Tenía nombre, pero no se intentó nada por nombre: o no supera el
+    // umbral, o falta ODOO_COMPANY_ID. Se deja constancia del motivo
+    // real en vez del mensaje genérico de abajo — esto es justo lo
+    // que costó diagnosticar la primera vez.
+    return {
+      partnerId: parseInt(fallbackId),
+      origen: 'VARIOS_SIN_NIF_BAJO_UMBRAL',
+      detalle: `Sin NIF; "${nombreGuest}" detectado pero factura ${importe.toFixed(2)}€ no supera el umbral ${umbral}€ (o falta ODOO_COMPANY_ID) → Clientes Varios`
+    };
   }
 
   return {
     partnerId: parseInt(fallbackId),
     origen: 'VARIOS_SIN_NIF',
-    detalle: 'Sin CIF/NIF en la factura → Clientes Varios'
+    detalle: 'Sin CIF/NIF y sin nombre de cliente en la factura → Clientes Varios'
   };
 }
 
