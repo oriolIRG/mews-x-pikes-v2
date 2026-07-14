@@ -57,9 +57,15 @@ odoo_user              usuario_tecnico
 partner_varios_id      <id del partner "Clientes Varios" en Odoo>
 ODOO_COMPANY_ID         <id de la compañía Odoo de ESTA propiedad, p.ej. Ibiza Rocks House>
 FISCAL_POSITION_ID     <id de la posición fiscal "España Península" en Odoo>
+ANALYTIC_ACCOUNT_ID    <id de la cuenta analítica, se aplica al 100% en cada línea>
 FOLDER_ID_INBOX         <id carpeta Drive de entrada>
 FOLDER_ID_PROCESADOS    <id carpeta Drive de archivo>
 ```
+
+`ANALYTIC_ACCOUNT_ID`: obligatoria. Es una única cuenta fija que se
+aplica al 100% de cada línea de cada factura — no varía según el tipo
+de servicio. Sin ella, la factura no se crea (antes en el repo viejo
+se creaba igual mente sin distribución si faltaba, ahora frena).
 
 `FISCAL_POSITION_ID`: la mayoría de clientes del hotel son extranjeros,
 pero el servicio se presta en España, así que deben tributar con IVA
