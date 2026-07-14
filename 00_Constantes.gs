@@ -35,8 +35,3 @@ const H_LIN = [
 ];
 
 const H_LOG = ['timestamp', 'tipo_reporte', 'empresa', 'num_items', 'hash_md5', 'estado', 'notas'];
-
-// Fila donde empiezan los datos reales en FACTURAS (las filas 2-6 son
-// leyenda/instrucciones para el equipo). Si cambias el diseño de la
-// hoja, actualiza esto.
-const FILA_DATOS_INICIO_FACTURAS = 7;

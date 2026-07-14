@@ -1,36 +1,43 @@
 /**
  * ================================================================
- *  WEBHOOKS — 3 endpoints separados para MEWS
+ *  WEBHOOKS — UN SOLO endpoint real para todo lo que envía Mews
  * ================================================================
- *  Deployment 1 → doPostClosed()   → URL para Accounting Closed
- *  Deployment 2 → doPostCreated()  → URL para Accounting Created
- *  Deployment 3 → doPostPayment()  → URL para Payment Report
- *  (Reservations comparte lógica pero se procesa aparte, ver abajo)
+ *  Importante sobre Apps Script: un despliegue como "Aplicación web"
+ *  SIEMPRE ejecuta la función doPost(e) (ese nombre exacto), da igual
+ *  cuántos despliegues distintos hagas. No existe la posibilidad de
+ *  que un despliegue llame a una función con otro nombre directamente.
+ *  (El repo original asumía lo contrario — doPostClosed/doPostCreated/
+ *  doPostPayment como si cada uno fuera su propio endpoint — eso no
+ *  funciona así en Apps Script real.)
  *
- *  Cada webhook guarda el JSON en Drive (carpeta FOLDER_ID_INBOX en
- *  CONFIG) y responde inmediatamente. El procesamiento real se hace
- *  desde el menú de Sheets cuando el operador lo decide.
+ *  Por eso aquí hay un único doPost(e) que MIRA EL CONTENIDO del JSON
+ *  para decidir de qué tipo de reporte se trata, en vez de depender
+ *  de qué "función" se supone que lo recibió.
+ *
+ *  DESPLIEGUE: Implementar → Nueva implementación → Aplicación web.
+ *  Una sola URL. Esa misma URL se apunta en Mews para las 4
+ *  suscripciones (Accounting Closed, Accounting Created, Payment
+ *  Report, Reservations) — si Mews te permite usar la misma URL para
+ *  varias suscripciones. Si Mews exige una URL distinta por
+ *  suscripción, puedes desplegar varias veces (cada despliegue tiene
+ *  su propia URL) — no pasa nada, todas ejecutan este mismo doPost(e)
+ *  y detectan el tipo igual por contenido.
  * ================================================================
  */
 
-function doPostClosed(e) {
-  return recibirJsonDeMews(e, 'CLOSED');
-}
-
-function doPostCreated(e) {
-  return recibirJsonDeMews(e, 'CREATED');
-}
-
-function doPostPayment(e) {
-  return recibirJsonDeMews(e, 'PAYMENT');
-}
-
 function doPost(e) {
-  // Fallback genérico si se usa una única URL para todo.
-  return recibirJsonDeMews(e, 'UNKNOWN');
-}
+  // Candado: si llegan 2-3 llamadas casi a la vez (reintentos de Mews,
+  // por ejemplo), sin esto todas podrían comprobar "¿ya existe?" antes
+  // de que ninguna haya terminado de guardar, y guardarían todas el
+  // mismo archivo por triplicado. Con el candado, solo una entra a la
+  // vez; las demás esperan su turno.
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(20000);
+  } catch (lockErr) {
+    return jsonResponse({ status: 'error', message: 'Ocupado, reintenta en unos segundos.' });
+  }
 
-function recibirJsonDeMews(e, tipoEsperado) {
   try {
     const raw = e.postData.contents;
     const hash = md5(raw);
@@ -39,24 +46,47 @@ function recibirJsonDeMews(e, tipoEsperado) {
       return jsonResponse({ status: 'duplicate', hash });
     }
 
+    const data = JSON.parse(raw);
+    const tipo = detectarTipoWebhook(data);
+
+    // Reservations se procesa al vuelo (es rápido, no hace falta pasar por Drive)
+    if (tipo === 'RESERVATIONS') {
+      const result = upsertReservas(data);
+      registrarLog('RESERVATIONS', result.empresa, result.total, hash, 'OK',
+        `${result.nuevas} nuevas, ${result.actualizadas} actualizadas`);
+      return jsonResponse({ status: 'ok', tipo, ...result });
+    }
+
+    // Accounting Closed / Created / Payment: se guardan en Drive y se
+    // procesan más tarde desde el menú, cuando el operador lo decida.
     const cfg = getConfig();
     const folderId = cfg['FOLDER_ID_INBOX'];
     if (!folderId) throw new Error('FOLDER_ID_INBOX no configurado en CONFIG');
 
     const folder = DriveApp.getFolderById(folderId);
     const timestamp = Utilities.formatDate(new Date(), 'Europe/Madrid', 'yyyy-MM-dd_HH-mm-ss');
-    const filename = `MEWS_${tipoEsperado}_${timestamp}.json`;
+    const filename = `MEWS_${tipo}_${timestamp}.json`;
 
     folder.createFile(filename, raw, MimeType.PLAIN_TEXT);
+    registrarLog('WEBHOOK_' + tipo, '', 0, hash, 'GUARDADO_DRIVE', filename);
 
-    registrarLog('WEBHOOK_' + tipoEsperado, '', 0, hash, 'GUARDADO_DRIVE', filename);
-
-    return jsonResponse({ status: 'ok', tipo: tipoEsperado, file: filename });
+    return jsonResponse({ status: 'ok', tipo, file: filename });
 
   } catch (err) {
-    Logger.log('ERROR webhook ' + tipoEsperado + ': ' + err.message);
+    Logger.log('ERROR doPost: ' + err.message);
     return jsonResponse({ status: 'error', message: err.message });
+  } finally {
+    lock.releaseLock();
   }
+}
+
+// Distingue Reservations (estructura distinta, sin 'Items') del resto
+// antes de delegar en detectarTipoReporte() para Closed/Created/Payment.
+function detectarTipoWebhook(data) {
+  if (data.Documents && data.Documents.some(doc => doc.Name === 'Reservations')) {
+    return 'RESERVATIONS';
+  }
+  return detectarTipoReporte(data).tipo;
 }
 
 function detectarTipoReporte(data) {

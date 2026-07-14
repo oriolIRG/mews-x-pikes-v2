@@ -74,7 +74,7 @@ function getApiKey() {
 // mismo archivo — aquí solo existe una vez, a propósito).
 function verificarConfig() {
   const cfg = getConfig();
-  const required = ['odoo_url', 'odoo_db', 'odoo_user', 'partner_varios_id', 'FOLDER_ID_INBOX', 'ODOO_COMPANY_ID', 'FISCAL_POSITION_ID'];
+  const required = ['odoo_url', 'odoo_db', 'odoo_user', 'partner_varios_id', 'FOLDER_ID_INBOX', 'ODOO_COMPANY_ID', 'FISCAL_POSITION_ID', 'ANALYTIC_ACCOUNT_ID'];
   const missing = required.filter(k => !cfg[k] || cfg[k] === 'RELLENAR');
 
   const apiKey = PropertiesService.getScriptProperties().getProperty('ODOO_API_KEY');

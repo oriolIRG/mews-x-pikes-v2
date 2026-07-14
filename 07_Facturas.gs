@@ -248,6 +248,10 @@ function importarFacturas() {
         const journalId = mappings.series[serie];
         if (!journalId) throw new Error(`Serie "${serie}" sin diario en CONFIG (añade SERIE_${serie})`);
 
+        // Obligatoria: sin cuenta analítica no se crea la factura.
+        const analyticId = parseInt(cfg['ANALYTIC_ACCOUNT_ID']);
+        if (!analyticId) throw new Error('Falta ANALYTIC_ACCOUNT_ID en CONFIG.');
+
         const lineas = todasLineas[billMews] || [];
         if (lineas.length === 0) throw new Error('Sin líneas de detalle. Vuelve a importar el Closed.');
 
@@ -261,16 +265,14 @@ function importarFacturas() {
           // factura normal → net tal cual; abono → signo invertido.
           const netDoc = isRefund ? -l.net : l.net;
 
-          const lineData = {
+          return [0, 0, {
             product_id: productId,
             price_unit: Math.abs(netDoc),
             quantity: netDoc < 0 ? -1 : 1,
             tax_ids: taxId ? [[6, 0, [taxId]]] : [[6, 0, []]],
             name: l.descripcion || l.mews_code,
-          };
-          const analyticId = parseInt(cfg['ANALYTIC_ACCOUNT_ID']) || null;
-          if (analyticId) lineData['analytic_distribution'] = { [analyticId]: 100 };
-          return [0, 0, lineData];
+            analytic_distribution: { [analyticId]: 100 },
+          }];
         });
 
         const localizadorOta = String(row[H_FACT.indexOf('localizador_ota')] || '').trim();
@@ -341,6 +343,12 @@ function extraerNumeroFactura(bill) {
   return m ? parseInt(m[0]) : 0;
 }
 
+// NOTA 2026: para facturas normales esto deja el nombre tal cual viene
+// de Mews, CON ESPACIO (ej. "PHF 2000866"), porque el regex de abajo
+// exige letras y número pegados y aquí van separados. Para abonos
+// (ej. "RPHF Credit Notes RPHF000054") sí engancha y da "RPHF/000054".
+// Es una inconsistencia real, pero decidido a propósito: para 2026 se
+// sigue como está (ya viene así en producción), se revisa en 2027.
 function formatearNumeroFactura(bill) {
   const s = String(bill || '').trim();
   if (s.startsWith('PAYMENT BILL')) return 'PB/' + parseInt(s.replace('PAYMENT BILL', '').trim());
@@ -362,7 +370,7 @@ function reordenarYRecalcularContinuidad() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const wsFact = ss.getSheetByName(TAB.FACTURAS);
   const data = wsFact.getDataRange().getValues();
-  if (data.length <= FILA_DATOS_INICIO_FACTURAS) return;
+  if (data.length < 2) return; // solo cabecera, nada que hacer
 
   const headers = data[0];
   const colSerie = headers.indexOf('serie');
@@ -370,7 +378,9 @@ function reordenarYRecalcularContinuidad() {
   const colCont = headers.indexOf('continuidad');
   const colBill = headers.indexOf('bill_mews');
 
-  const filasDatos = data.slice(FILA_DATOS_INICIO_FACTURAS).filter(r => r[colBill]);
+  // Todo lo que hay debajo de la cabecera (fila 1) con bill_mews
+  // relleno cuenta como dato real — sin asumir ninguna fila "reservada".
+  const filasDatos = data.slice(1).filter(r => r[colBill]);
   if (filasDatos.length === 0) return;
 
   filasDatos.sort((a, b) => {
@@ -402,7 +412,7 @@ function reordenarYRecalcularContinuidad() {
   }
 
   const numCols = headers.length;
-  wsFact.getRange(FILA_DATOS_INICIO_FACTURAS + 1, 1, filasDatos.length, numCols).setValues(filasDatos);
+  wsFact.getRange(2, 1, filasDatos.length, numCols).setValues(filasDatos);
 
   actualizarHuecos(filasDatos, headers);
 }

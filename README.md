@@ -13,8 +13,10 @@ apaga la vieja y se pasa a esta.
 Crea una hoja nueva con estas pestañas (nombres exactos, mayúsculas):
 
 - `CONFIG` — 2 columnas: clave | valor
-- `FACTURAS` — cabeceras en la fila 1, datos reales desde la fila 8
-  (filas 2-7 libres para instrucciones/leyenda para el equipo)
+- `FACTURAS` — cabeceras en la fila 1, datos reales desde la fila 2
+  (sin filas en blanco entre medias — el código ya no asume ninguna
+  leyenda reservada, así que si quieres notas para el equipo ponlas
+  en otra pestaña o a la derecha de las columnas de datos)
 - `FACTURAS_LINEAS`
 - `LOG_IMPORT`
 - `PARTNER_CACHE`
@@ -95,12 +97,19 @@ supera este importe; por debajo, y si el cliente no existe ya en
 Odoo/agencias/caché, va a Clientes Varios. Si el cliente ya existe
 por cualquier otra vía, se usa igual sin importar el importe.
 
-## 4. Desplegar los webhooks
+## 4. Desplegar el webhook
 
-Implementar → Nueva implementación → Aplicación web, una vez por cada
-función: `doPostClosed`, `doPostCreated`, `doPostPayment`,
-`doPostReservations`. Apunta cada URL en Mews a su webhook
-correspondiente.
+Implementar → Nueva implementación → Aplicación web. **Una sola vez**
+— Apps Script siempre ejecuta `doPost(e)` sin importar cuántos
+despliegues hagas, así que no hay "una función por reporte". El
+propio `doPost(e)` mira el contenido del JSON y decide solo si es
+Accounting Closed, Created, Payment o Reservations.
+
+Apunta esa misma URL en Mews para las 4 suscripciones (Accounting
+Closed, Accounting Created, Payment Report, Reservations), si Mews te
+deja usar la misma URL para varias. Si Mews exige una URL distinta
+por suscripción, puedes crear varios despliegues — no pasa nada, cada
+uno ejecuta el mismo `doPost(e)` y detecta el tipo igual.
 
 ## 5. Reprocesar julio
 
@@ -134,3 +143,22 @@ falta un sistema en paralelo.
 - Se parte de la rama `agrupacion_por_categoria`, no de `main`, porque
   es la que tiene el fix del signo en abonos y la agrupación de líneas
   por código+IVA ya aplicados.
+- El repo viejo documentaba `doPostClosed`/`doPostCreated`/
+  `doPostPayment`/`doPostReservations` como si cada uno fuera un
+  endpoint desplegable por separado. Apps Script no funciona así:
+  cualquier despliegue de "Aplicación web" ejecuta siempre `doPost(e)`.
+  Ahora hay un único `doPost(e)` que detecta el tipo de reporte por el
+  contenido del JSON — un solo despliegue, no cuatro.
+- Si llegan 2-3 llamadas casi a la vez al webhook (reintentos de
+  Mews, por ejemplo), sin ningún candado todas podían comprobar
+  "¿ya existe?" antes de que ninguna terminara de guardar, y guardaban
+  el mismo archivo por duplicado/triplicado en Drive. Ahora `doPost(e)`
+  usa `LockService` para que solo una llamada guarde a la vez.
+- `reordenarYRecalcularContinuidad()` asumía 6 filas de leyenda en
+  blanco (filas 2-7) antes de que empezaran los datos reales en
+  FACTURAS, heredado del diseño de la hoja original. Con una hoja sin
+  esas filas, las primeras facturas insertadas (en el orden en que
+  aparecen en el JSON, no ordenadas) caían en esas filas "reservadas"
+  y se excluían en silencio del cálculo de huecos — saliendo como
+  huecos falsos aunque la factura sí existiera. Ahora no se asume
+  ninguna fila reservada: todo lo que hay bajo la cabecera cuenta.

@@ -3,30 +3,11 @@
  *  RESERVAS — recibe reservas de Mews para poder mostrar el
  *  localizador de la OTA (Booking, Expedia...) en cada factura.
  * ================================================================
+ *  El enrutado (detectar que es un JSON de Reservations y llamar a
+ *  upsertReservas) pasa por el doPost(e) único de 04_Webhooks.gs,
+ *  no hay un endpoint propio aquí.
+ * ================================================================
  */
-
-function doPostReservations(e) {
-  try {
-    const raw = e.postData.contents;
-    const hash = md5(raw);
-
-    if (hashYaProcesado(hash)) {
-      return jsonResponse({ status: 'duplicate', hash });
-    }
-
-    const data = JSON.parse(raw);
-    const result = upsertReservas(data);
-
-    registrarLog('RESERVATIONS', result.empresa, result.total, hash, 'OK',
-      `${result.nuevas} nuevas, ${result.actualizadas} actualizadas`);
-
-    return jsonResponse({ status: 'ok', ...result });
-
-  } catch (err) {
-    Logger.log('ERROR doPostReservations: ' + err.message);
-    return jsonResponse({ status: 'error', message: err.message });
-  }
-}
 
 function upsertReservas(data) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
