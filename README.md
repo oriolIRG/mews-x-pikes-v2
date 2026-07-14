@@ -106,6 +106,15 @@ supera este importe; por debajo, y si el cliente no existe ya en
 Odoo/agencias/caché, va a Clientes Varios. Si el cliente ya existe
 por cualquier otra vía, se usa igual sin importar el importe.
 
+Si la factura supera el umbral pero NO hay NIF/CIF en absoluto (huésped
+sin identificación fiscal en Mews), se intenta emparejar por el nombre
+exacto (`Owner`) antes de rendirse a Clientes Varios. Sin NIF no hay
+clave estable, así que es un intento best-effort: una variación en el
+nombre no lo va a encontrar. Si no encuentra coincidencia, crea un
+cliente nuevo como persona (no empresa) igualmente, y queda marcado en
+`notas` como "creado SIN NIF" para que el equipo lo revise si aparece
+un NIF real más adelante.
+
 ## 4. Desplegar el webhook
 
 Implementar → Nueva implementación → Aplicación web. **Una sola vez**

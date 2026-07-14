@@ -82,6 +82,51 @@ function resolverPartner(cfg, uid, agencia, nif, ownerNombre, ownerNif, fallback
     };
   }
 
+  // Sin NIF: si la factura supera el umbral, se intenta emparejar por
+  // nombre exacto (campo Owner de Mews) antes de rendirse a Varios.
+  // Sin NIF no hay clave estable, así que esto es best-effort: un
+  // espacio o acento distinto no lo va a encontrar. Se cachea por
+  // nombre (prefijo NOMBRE:: para no chocar con claves de NIF reales)
+  // para no repetir la búsqueda si el mismo huésped vuelve a superar
+  // el umbral en otra factura.
+  const nombreGuest = String(ownerNombre || '').trim();
+  if (nombreGuest) {
+    const companyId = parseInt(cfg['ODOO_COMPANY_ID']);
+    const umbral = parseFloat(cfg['UMBRAL_CREACION_CLIENTE']) || UMBRAL_CREACION_CLIENTE_DEFECTO;
+    const importe = Math.abs(parseFloat(importeFactura) || 0);
+
+    if (companyId && importe > umbral) {
+      const claveCache = `NOMBRE::${nombreGuest}`;
+      const cachedPorNombre = getCachedPartner(claveCache);
+      if (cachedPorNombre !== null) return { partnerId: cachedPorNombre, origen: 'CACHE_POR_NOMBRE' };
+
+      const res = odooExec(cfg, uid, 'res.partner', 'search_read',
+        [[['name', '=', nombreGuest], ['active', '=', true], '|', ['company_id', '=', false], ['company_id', '=', companyId]]],
+        { fields: ['id', 'name'], limit: 1 }
+      );
+      if (res.length > 0) {
+        guardarPartnerCache(claveCache, res[0].id, res[0].name, 'AUTO_NOMBRE');
+        return { partnerId: res[0].id, origen: 'ODOO_EXISTENTE_POR_NOMBRE' };
+      }
+
+      try {
+        const fiscalPositionId = parseInt(cfg['FISCAL_POSITION_ID']);
+        const partnerData = { name: nombreGuest, is_company: false, customer_rank: 1, company_id: companyId };
+        if (fiscalPositionId) partnerData.property_account_position_id = fiscalPositionId;
+        const newId = odooExec(cfg, uid, 'res.partner', 'create', [partnerData], {});
+        guardarPartnerCache(claveCache, newId, nombreGuest, 'CREADO_SIN_NIF');
+        return {
+          partnerId: newId,
+          origen: 'CREADO_SIN_NIF',
+          detalle: `Cliente creado SIN NIF (emparejado solo por nombre "${nombreGuest}") — factura ${importe.toFixed(2)}€ > umbral ${umbral}€. Revisar y añadir NIF si aparece más adelante.`
+        };
+      } catch (e) {
+        Logger.log('ERROR creando partner sin NIF ' + nombreGuest + ': ' + e.message);
+        // cae a Varios abajo
+      }
+    }
+  }
+
   return {
     partnerId: parseInt(fallbackId),
     origen: 'VARIOS_SIN_NIF',
