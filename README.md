@@ -61,9 +61,18 @@ ODOO_COMPANY_ID         <id de la compañía Odoo de ESTA propiedad, p.ej. Ibiza
 FISCAL_POSITION_ID     <id de la posición fiscal "España Península" en Odoo>
 ANALYTIC_ACCOUNT_ID    <id de la cuenta analítica, se aplica al 100% en cada línea>
 BILL_TYPE_EXCLUIR      <opcional, códigos de "Bill type code" a excluir, separados por |, ej. HIP>
+HUESPEDES_SHEET_ID     <opcional, id de la hoja aparte de Huéspedes (ver ese proyecto)>
 FOLDER_ID_INBOX         <id carpeta Drive de entrada>
 FOLDER_ID_PROCESADOS    <id carpeta Drive de archivo>
 ```
+
+`HUESPEDES_SHEET_ID`: opcional. Si se pone, cuando una factura no tiene
+NIF se consulta esa hoja (proyecto aparte, ver `mews-huespedes`) por
+nombre exacto — si el huésped tiene pasaporte registrado ahí, se usa
+como NIF efectivo (mismo circuito que un NIF real: agencia, caché,
+búsqueda en Odoo, creación con umbral) y se rellena el país en Odoo.
+Si no se pone, o no encuentra coincidencia, sigue el comportamiento
+anterior (emparejar solo por nombre en Odoo, sin país).
 
 `BILL_TYPE_EXCLUIR`: opcional. Mews tiene bills técnicos internos (ej.
 "Tests / Cross-settlements", que siempre netean a 0) marcados con un

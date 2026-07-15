@@ -6,19 +6,23 @@
  *   1. ¿El CIF está en la pestaña AGENCIAS?           → esa id (siempre,
  *                                                        no depende del importe)
  *   2. ¿El CIF está en caché (PARTNER_CACHE)?          → esa id (siempre)
- *   3. ¿Existe en Odoo por NIF?                        → esa id (siempre, y se cachea)
- *   4. No existe todavía en Odoo:
+ *   3. Sin NIF de Mews: se consulta la hoja aparte de Huéspedes (por
+ *      nombre exacto) — si tiene pasaporte, se usa como NIF efectivo
+ *      para todo lo de abajo (mismo tratamiento que un NIF real).
+ *   4. ¿Existe en Odoo por NIF/pasaporte?               → esa id (y se cachea)
+ *   5. No existe todavía en Odoo:
  *        - factura > UMBRAL_CREACION_CLIENTE (CONFIG, por defecto 3000€)
- *          → se crea el cliente nuevo en Odoo
+ *          → se crea el cliente nuevo en Odoo (con país si venía del
+ *            pasaporte)
  *        - factura ≤ umbral → NO se crea; va a "Clientes Varios"
- *   5. No hay CIF en absoluto, pero SÍ hay nombre (Owner) y la factura
- *      supera el umbral → se intenta emparejar por nombre exacto en
- *      Odoo antes de crear un cliente nuevo (sin NIF, como persona)
- *   6. Ni CIF ni nombre, o no supera el umbral                → "Clientes Varios"
+ *   6. Sin NIF ni pasaporte, pero SÍ hay nombre (Owner) y supera el
+ *      umbral → se intenta emparejar por nombre exacto en Odoo antes
+ *      de crear un cliente nuevo (sin identificador, como persona)
+ *   7. Nada de lo anterior, o no supera el umbral        → "Clientes Varios"
  *
- *  El umbral SOLO aplica a los pasos 4 y 5 (creación de cliente
- *  nuevo). Si el cliente ya existe por cualquier otra vía (agencia,
- *  caché, o ya estaba en Odoo), se usa igual sin importar el importe.
+ *  El umbral SOLO aplica a la creación de cliente nuevo. Si el
+ *  cliente ya existe por cualquier otra vía (agencia, caché, o ya
+ *  estaba en Odoo), se usa igual sin importar el importe.
  * ================================================================
  */
 
@@ -30,15 +34,30 @@ function resolverPartner(cfg, uid, agencia, nif, ownerNombre, ownerNif, fallback
     if (agenciaId) return { partnerId: agenciaId, origen: 'AGENCIA' };
   }
 
-  const cifEfectivo = nif || ownerNif || '';
+  // Sin NIF de ningún tipo: consultar la hoja aparte de Huéspedes por
+  // nombre exacto. Si tiene pasaporte, se usa como NIF efectivo — así
+  // reutiliza toda la lógica de abajo (agencia ya se comprobó, caché,
+  // búsqueda en Odoo, creación con umbral) sin duplicar nada.
+  let datosHuesped = null;
+  let esPasaporte = false;
+  let ownerNifEfectivo = ownerNif;
+  if (!nif && !ownerNif && ownerNombre) {
+    datosHuesped = buscarHuespedPorNombreExterno(cfg, ownerNombre);
+    if (datosHuesped && datosHuesped.passport) {
+      ownerNifEfectivo = datosHuesped.passport;
+      esPasaporte = true;
+    }
+  }
+
+  const cifEfectivo = nif || ownerNifEfectivo || '';
   const datosCache = cifEfectivo ? buscarEnCompanyCache(cifEfectivo) : null;
   const nombreEfectivo = (datosCache && datosCache.nombre)
     ? datosCache.nombre
-    : (cifEfectivo ? 'Empresa ' + cifEfectivo : 'Cliente MEWS');
+    : (esPasaporte ? ownerNombre.trim() : (cifEfectivo ? 'Empresa ' + cifEfectivo : 'Cliente MEWS'));
 
   if (cifEfectivo) {
     const cached = getCachedPartner(cifEfectivo);
-    if (cached !== null) return { partnerId: cached, origen: 'CACHE' };
+    if (cached !== null) return { partnerId: cached, origen: esPasaporte ? 'CACHE_PASAPORTE' : 'CACHE' };
 
     const companyId = parseInt(cfg['ODOO_COMPANY_ID']);
     if (!companyId) {
@@ -53,8 +72,8 @@ function resolverPartner(cfg, uid, agencia, nif, ownerNombre, ownerNif, fallback
       { fields: ['id', 'name'], limit: 1 }
     );
     if (res.length > 0) {
-      guardarPartnerCache(cifEfectivo, res[0].id, res[0].name, 'AUTO');
-      return { partnerId: res[0].id, origen: 'ODOO_EXISTENTE' };
+      guardarPartnerCache(cifEfectivo, res[0].id, res[0].name, esPasaporte ? 'AUTO_PASAPORTE' : 'AUTO');
+      return { partnerId: res[0].id, origen: esPasaporte ? 'ODOO_EXISTENTE_PASAPORTE' : 'ODOO_EXISTENTE' };
     }
 
     const umbral = parseFloat(cfg['UMBRAL_CREACION_CLIENTE']) || UMBRAL_CREACION_CLIENTE_DEFECTO;
@@ -69,10 +88,13 @@ function resolverPartner(cfg, uid, agencia, nif, ownerNombre, ownerNif, fallback
       };
     }
 
-    const newId = crearPartnerEnOdoo(cfg, uid, nombreEfectivo, cifEfectivo, companyId);
+    const newId = crearPartnerEnOdoo(cfg, uid, nombreEfectivo, cifEfectivo, companyId, {
+      esPersona: esPasaporte,
+      countryId: esPasaporte ? resolverCountryId(cfg, uid, datosHuesped.countryCode) : null,
+    });
     if (newId) {
-      guardarPartnerCache(cifEfectivo, newId, nombreEfectivo, 'CREADO_AUTO');
-      return { partnerId: newId, origen: 'CREADO' };
+      guardarPartnerCache(cifEfectivo, newId, nombreEfectivo, esPasaporte ? 'CREADO_PASAPORTE' : 'CREADO_AUTO');
+      return { partnerId: newId, origen: esPasaporte ? 'CREADO_CON_PASAPORTE' : 'CREADO' };
     }
 
     // Tenía CIF y superaba el umbral, pero crearPartnerEnOdoo() falló
@@ -168,10 +190,14 @@ function buscarEnAgencias(cif) {
   return null;
 }
 
-function crearPartnerEnOdoo(cfg, uid, nombre, vat, companyId) {
+function crearPartnerEnOdoo(cfg, uid, nombre, vat, companyId, opciones) {
+  const esPersona = (opciones && opciones.esPersona) || false;
+  const countryId = (opciones && opciones.countryId) || null;
+
   try {
     const datosCompletos = buscarEnCompanyCache(vat);
-    const partnerData = { vat, is_company: true, customer_rank: 1, company_id: companyId };
+    const partnerData = { vat, is_company: !esPersona, customer_rank: 1, company_id: companyId };
+    if (countryId) partnerData.country_id = countryId;
 
     // Posición fiscal explícita (p.ej. "España Península"). La mayoría
     // de clientes son extranjeros, pero el servicio se presta en
@@ -199,6 +225,69 @@ function crearPartnerEnOdoo(cfg, uid, nombre, vat, companyId) {
     Logger.log('ERROR creando partner ' + nombre + ': ' + e.message);
     return null;
   }
+}
+
+// ── Integración con la hoja aparte de Huéspedes (proyecto distinto) ─
+// CONFIG: HUESPEDES_SHEET_ID → id de esa hoja de Google Sheets.
+// Opcional: si no está configurado, esto simplemente no se usa (no
+// rompe nada, solo no encuentra pasaporte/país para nadie).
+function buscarHuespedPorNombreExterno(cfg, nombreCompleto) {
+  const sheetId = cfg['HUESPEDES_SHEET_ID'];
+  if (!sheetId) return null;
+
+  const objetivo = normalizarNombre(nombreCompleto);
+  if (!objetivo) return null;
+
+  try {
+    const ss = SpreadsheetApp.openById(sheetId);
+    const ws = ss.getSheetByName('HUESPEDES');
+    if (!ws || ws.getLastRow() < 2) return null;
+
+    const data = ws.getDataRange().getValues();
+    const headers = data[0];
+    const colNombre = headers.indexOf('nombre_completo');
+    const colPassport = headers.indexOf('passport_number');
+    const colCountry = headers.indexOf('country');
+    const colCountryCode = headers.indexOf('country_code');
+
+    for (let i = 1; i < data.length; i++) {
+      if (normalizarNombre(data[i][colNombre]) === objetivo) {
+        const passport = String(data[i][colPassport] || '').trim();
+        if (!passport) return null; // encontrado, pero sin pasaporte registrado
+        return {
+          passport,
+          country: String(data[i][colCountry] || '').trim(),
+          countryCode: String(data[i][colCountryCode] || '').trim(),
+        };
+      }
+    }
+    return null;
+  } catch (e) {
+    Logger.log('ERROR consultando hoja de Huéspedes: ' + e.message);
+    return null;
+  }
+}
+
+function resolverCountryId(cfg, uid, countryCode) {
+  if (!countryCode) return null;
+  try {
+    const res = odooExec(cfg, uid, 'res.country', 'search_read',
+      [[['code', '=', countryCode.toUpperCase()]]], { fields: ['id'], limit: 1 });
+    return res.length > 0 ? res[0].id : null;
+  } catch (e) {
+    Logger.log('ERROR buscando país ' + countryCode + ': ' + e.message);
+    return null;
+  }
+}
+
+// Misma normalización que en el proyecto de Huéspedes — si se cambia
+// aquí, cambiar también allí para que sigan comparando igual.
+function normalizarNombre(s) {
+  return String(s || '')
+    .trim()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .toUpperCase();
 }
 
 // COMPANY_CACHE es opcional: si existe, permite crear partners con
