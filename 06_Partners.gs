@@ -88,22 +88,22 @@ function resolverPartner(cfg, uid, agencia, nif, ownerNombre, ownerNif, fallback
       };
     }
 
-    const newId = crearPartnerEnOdoo(cfg, uid, nombreEfectivo, cifEfectivo, companyId, {
+    const resultado = crearPartnerEnOdoo(cfg, uid, nombreEfectivo, cifEfectivo, companyId, {
       esPersona: esPasaporte,
       countryId: esPasaporte ? resolverCountryId(cfg, uid, datosHuesped.countryCode) : null,
     });
-    if (newId) {
-      guardarPartnerCache(cifEfectivo, newId, nombreEfectivo, esPasaporte ? 'CREADO_PASAPORTE' : 'CREADO_AUTO');
-      return { partnerId: newId, origen: esPasaporte ? 'CREADO_CON_PASAPORTE' : 'CREADO' };
+    if (resultado.id) {
+      guardarPartnerCache(cifEfectivo, resultado.id, nombreEfectivo, esPasaporte ? 'CREADO_PASAPORTE' : 'CREADO_AUTO');
+      return { partnerId: resultado.id, origen: esPasaporte ? 'CREADO_CON_PASAPORTE' : 'CREADO' };
     }
 
-    // Tenía CIF y superaba el umbral, pero crearPartnerEnOdoo() falló
-    // (ver Logger para el motivo). Cae a Varios, mismo destino pero
-    // se distingue del caso "sin CIF" para no confundir al operador.
+    // Tenía CIF y superaba el umbral, pero crearPartnerEnOdoo() falló.
+    // Cae a Varios, mismo destino pero con el motivo real de Odoo en
+    // notas, no un mensaje genérico.
     return {
       partnerId: parseInt(fallbackId),
       origen: 'VARIOS_CREACION_FALLIDA',
-      detalle: `CIF ${cifEfectivo}: falló la creación del cliente en Odoo → Clientes Varios`
+      detalle: `CIF ${cifEfectivo}: falló la creación del cliente en Odoo: ${resultado.error} → Clientes Varios`
     };
   }
 
@@ -220,10 +220,11 @@ function crearPartnerEnOdoo(cfg, uid, nombre, vat, companyId, opciones) {
       partnerData.name = nombre;
     }
 
-    return odooExec(cfg, uid, 'res.partner', 'create', [partnerData], {});
+    const id = odooExec(cfg, uid, 'res.partner', 'create', [partnerData], {});
+    return { id, error: null };
   } catch (e) {
     Logger.log('ERROR creando partner ' + nombre + ': ' + e.message);
-    return null;
+    return { id: null, error: e.message };
   }
 }
 

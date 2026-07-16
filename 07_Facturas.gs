@@ -374,9 +374,13 @@ function importarFacturas() {
         const partnerNombre = created[0]?.partner_id?.[1] || '';
 
         actualizarFila(wsFact, i + 1, H_FACT, {
-          partner_odoo_id: partnerId, cliente_nombre: partnerNombre,
+          // cliente_nombre NO se toca — es el nombre real del huésped
+          // que viene de Mews, no del partner de Odoo. Sobreescribirlo
+          // con "Clientes Varios" cuando cae ahí destruía justo el
+          // dato que hace falta para diagnosticar cruces por nombre.
+          partner_odoo_id: partnerId,
           estado: 'CREADA', odoo_invoice_id: invoiceId, fecha_procesado: ahora(),
-          notas: `Odoo name: ${nombreOdoo}` + (resolucion.detalle ? ` ⚠️ ${resolucion.detalle}` : '')
+          notas: `Odoo name: ${nombreOdoo} | Partner: ${partnerNombre}` + (resolucion.detalle ? ` ⚠️ ${resolucion.detalle}` : '')
         });
         creadas++;
 
