@@ -42,6 +42,23 @@ function getOdooUid(cfg) {
 }
 
 function odooExec(cfg, uid, model, method, args, kwargs) {
+  // Fusiona SIEMPRE el contexto de compañía, en toda llamada del
+  // proyecto — sin esto, campos "dependientes de compañía" en Odoo
+  // (como property_account_position_id) se leen/validan contra la
+  // compañía por defecto del usuario técnico, no contra
+  // ODOO_COMPANY_ID, y eso es lo que causaba el "company crossover"
+  // al crear clientes con posición fiscal. Confirmado con pruebas
+  // reales: el mismo read() daba `false` sin esto y el valor correcto
+  // con esto puesto.
+  const companyId = parseInt(cfg['ODOO_COMPANY_ID']);
+  const kwargsFinal = Object.assign({}, kwargs || {});
+  if (companyId) {
+    kwargsFinal.context = Object.assign(
+      { allowed_company_ids: [companyId], force_company: companyId, company_id: companyId },
+      kwargsFinal.context || {} // si el que llama ya puso algo en context, eso manda
+    );
+  }
+
   const methodCall = XmlService.createElement('methodCall')
     .addContent(XmlService.createElement('methodName').setText('execute_kw'))
     .addContent(XmlService.createElement('params')
@@ -51,7 +68,7 @@ function odooExec(cfg, uid, model, method, args, kwargs) {
       .addContent(odooParam(model))
       .addContent(odooParam(method))
       .addContent(odooParam(args))
-      .addContent(odooParam(kwargs || {}))
+      .addContent(odooParam(kwargsFinal))
     );
 
   const payload = XmlService.getCompactFormat().format(XmlService.createDocument(methodCall));

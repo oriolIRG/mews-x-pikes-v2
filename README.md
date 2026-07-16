@@ -210,6 +210,16 @@ falta un sistema en paralelo.
   diferencia de los huecos normales que sí se recalculan cada vez).
   Respeta `BILL_TYPE_EXCLUIR` y no avisa de "Payment Bill" (PB), que
   por diseño son solo-pago y no es un error.
+- **El bug de "company crossover" al crear clientes**: causado por
+  `property_account_position_id` (y otros campos "dependientes de
+  compañía" en Odoo) no tener nunca un contexto de compañía explícito
+  en las llamadas XML-RPC del proyecto — Odoo los leía/validaba contra
+  la compañía por defecto del usuario técnico, no contra
+  `ODOO_COMPANY_ID`. Confirmado con pruebas reales (mismo `read()`
+  daba `false` sin contexto y el valor correcto con contexto). Ahora
+  `odooExec()` fusiona automáticamente `{allowed_company_ids,
+  force_company, company_id}` en toda llamada del proyecto — no hace
+  falta acordarse de ponerlo sitio por sitio.
 - La serie se sacaba solo leyendo el texto de `Bill` (letras+espacio+
   número). Bills reales como "Cancellations 0000053" tienen serie PHC
   según el campo `Bill type code` de Mews, pero su texto no encaja en
