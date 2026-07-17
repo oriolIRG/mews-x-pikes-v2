@@ -287,7 +287,7 @@ function importarFacturas() {
     }
 
     const todasLineas = cargarLineas(wsLin);
-    let creadas = 0, saltadas = 0, errores = 0;
+    let creadas = 0, saltadas = 0, errores = 0, discrepanciasCuadre = 0;
     const errDetail = [];
 
     for (let i = 1; i < data.length; i++) {
@@ -369,9 +369,25 @@ function importarFacturas() {
           invoice_line_ids: invoiceLines,
         }], {});
 
-        const created = odooExec(cfg, uid, 'account.move', 'read', [[invoiceId]], { fields: ['name', 'partner_id'] });
+        const created = odooExec(cfg, uid, 'account.move', 'read', [[invoiceId]], { fields: ['name', 'partner_id', 'amount_total'] });
         const nombreOdoo = created[0]?.name || billOdoo;
         const partnerNombre = created[0]?.partner_id?.[1] || '';
+
+        // Cuadre Gross: se comprueba aquí mismo, en la misma lectura
+        // que ya hacíamos, sin llamada extra a Odoo. Solo DETECTA y
+        // deja constancia en CUADRE_GROSS — no corrige nada sola. La
+        // corrección sigue siendo un botón aparte y deliberado, para
+        // poder ver el patrón completo antes de que se autocorrija
+        // nada (si un día hay muchas a la vez, es señal de algo más
+        // gordo que un simple redondeo).
+        const grossOdoo = created[0]?.amount_total;
+        if (grossOdoo !== undefined) {
+          const diferencia = Math.round((grossOdoo - Math.abs(importeTotal)) * 100) / 100;
+          if (Math.abs(diferencia) >= 0.01) {
+            registrarDiscrepanciaCuadre(billMews, billOdoo, invoiceId, Math.abs(importeTotal), grossOdoo, diferencia);
+            discrepanciasCuadre++;
+          }
+        }
 
         actualizarFila(wsFact, i + 1, H_FACT, {
           // cliente_nombre NO se toca — es el nombre real del huésped
@@ -394,6 +410,7 @@ function importarFacturas() {
     }
 
     let msg = `✅ Proceso completado\n\n• Creadas en Odoo (borrador): ${creadas}\n• Ya existían/saltadas: ${saltadas}\n• Errores: ${errores}`;
+    if (discrepanciasCuadre > 0) msg += `\n• ⚖️ Discrepancias de Gross detectadas: ${discrepanciasCuadre} (ver CUADRE_GROSS)`;
     if (errores > 0) msg += '\n\nDetalle:\n' + errDetail.slice(0, 5).join('\n');
     if (creadas > 0) msg += '\n\n📌 Recuerda confirmar las facturas manualmente en Odoo.';
     ui.alert(msg);
@@ -587,5 +604,161 @@ function verificarContinuidad() {
     n === 0
       ? '✅ Sin huecos de numeración detectados.'
       : `⚠️ ${n} hueco(s) de numeración detectados. Revisa la pestaña ${TAB.HUECOS}.`
+  );
+}
+
+// Helper compartido: añade (o crea si no existe) una fila en
+// CUADRE_GROSS. La usan tanto importarFacturas (detección al vuelo,
+// justo tras crear cada factura) como verificarCuadreConOdoo (repaso
+// completo bajo demanda, útil para facturas creadas antes de tener
+// esta detección integrada).
+function registrarDiscrepanciaCuadre(billMews, billOdoo, invoiceId, grossMews, grossOdoo, diferencia) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let wsCuadre = ss.getSheetByName('CUADRE_GROSS');
+  if (!wsCuadre) {
+    wsCuadre = ss.insertSheet('CUADRE_GROSS');
+    wsCuadre.getRange(1, 1, 1, 8).setValues([[
+      'bill_mews', 'bill_odoo', 'odoo_invoice_id', 'gross_mews', 'gross_odoo', 'diferencia', 'estado', 'comprobado'
+    ]]);
+    wsCuadre.getRange(1, 1, 1, 8).setFontWeight('bold');
+    wsCuadre.setFrozenRows(1);
+  }
+  wsCuadre.appendRow([
+    billMews, billOdoo, invoiceId, grossMews.toFixed(2), grossOdoo.toFixed(2),
+    diferencia.toFixed(2), 'PENDIENTE', ahora()
+  ]);
+}
+
+// ── Comprobación de cuadre bajo demanda (repaso completo) ──────────
+// Para facturas que ya estaban CREADA antes de tener la detección
+// integrada en importarFacturas, o simplemente para volver a repasar
+// todo de golpe. Las nuevas ya se detectan solas al importar.
+function verificarCuadreConOdoo() {
+  const ui = SpreadsheetApp.getUi();
+  const cfg = getConfig();
+  const uid = getOdooUid(cfg);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const wsFact = ss.getSheetByName(TAB.FACTURAS);
+  const data = wsFact.getDataRange().getValues();
+
+  let comprobadas = 0, nuevasDiscrepancias = 0;
+  let sumaDiferencia = 0;
+
+  // Bills que ya están registrados en CUADRE_GROSS, para no duplicar
+  // filas si esta factura ya se detectó al vuelo durante el import.
+  const wsCuadreExistente = ss.getSheetByName('CUADRE_GROSS');
+  const yaRegistrados = new Set(
+    wsCuadreExistente && wsCuadreExistente.getLastRow() > 1
+      ? wsCuadreExistente.getRange(2, 1, wsCuadreExistente.getLastRow() - 1, 1).getValues().map(r => String(r[0]))
+      : []
+  );
+
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const estado = String(row[H_FACT.indexOf('estado')]).trim();
+    const invoiceId = row[H_FACT.indexOf('odoo_invoice_id')];
+    if (estado !== 'CREADA' || !invoiceId) continue;
+
+    const billMews = row[H_FACT.indexOf('bill_mews')];
+    if (yaRegistrados.has(String(billMews))) continue; // ya detectada antes
+
+    const billOdoo = row[H_FACT.indexOf('bill_odoo')];
+    const grossMews = Math.abs(parseFloat(row[H_FACT.indexOf('importe_bruto')]) || 0);
+
+    try {
+      const res = odooExec(cfg, uid, 'account.move', 'read', [[parseInt(invoiceId)]], { fields: ['amount_total'] });
+      comprobadas++;
+      if (!res[0]) continue;
+
+      const grossOdoo = res[0].amount_total;
+      const diferencia = Math.round((grossOdoo - grossMews) * 100) / 100;
+
+      if (Math.abs(diferencia) >= 0.01) {
+        registrarDiscrepanciaCuadre(billMews, billOdoo, invoiceId, grossMews, grossOdoo, diferencia);
+        nuevasDiscrepancias++;
+        sumaDiferencia += diferencia;
+      }
+    } catch (e) {
+      Logger.log('ERROR comprobando cuadre de ' + billMews + ': ' + e.message);
+    }
+  }
+
+  ui.alert(
+    '✅ Repaso completo terminado\n\n' +
+    `• Facturas comprobadas (no detectadas antes): ${comprobadas}\n` +
+    `• Discrepancias nuevas encontradas: ${nuevasDiscrepancias}\n` +
+    `• Diferencia acumulada de las nuevas: ${sumaDiferencia.toFixed(2)}€\n\n` +
+    'Detalle acumulado en la pestaña CUADRE_GROSS (incluye también las detectadas automáticamente al importar).'
+  );
+}
+
+// ── Corrección automática de redondeos pequeños ─────────────────────
+// Para las discrepancias dentro de MARGEN_REDONDEO (CONFIG), añade una
+// línea de ajuste a la factura (todavía en borrador) contra la cuenta
+// CUENTA_REDONDEO_ID, sin IVA, por el importe exacto que falta o sobra
+// — así el total en Odoo pasa a coincidir exactamente con Mews. Las
+// que superen el margen NO se tocan, se quedan para revisión manual.
+function corregirRedondeosAutomaticamente() {
+  const ui = SpreadsheetApp.getUi();
+  const cfg = getConfig();
+  const uid = getOdooUid(cfg);
+  const cuentaId = parseInt(cfg['CUENTA_REDONDEO_ID']);
+  const margen = parseFloat(cfg['MARGEN_REDONDEO']);
+
+  if (!cuentaId) { ui.alert('❌ Falta CUENTA_REDONDEO_ID en CONFIG.'); return; }
+  if (isNaN(margen)) { ui.alert('❌ Falta MARGEN_REDONDEO en CONFIG (ej. 0.05).'); return; }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const wsCuadre = ss.getSheetByName('CUADRE_GROSS');
+  if (!wsCuadre || wsCuadre.getLastRow() < 2) {
+    ui.alert('No hay nada en CUADRE_GROSS. Ejecuta primero "Comprobar cuadre Gross".');
+    return;
+  }
+
+  const data = wsCuadre.getDataRange().getValues();
+  const H_CUADRE = data[0];
+  const colEstado = H_CUADRE.indexOf('estado');
+  const colDif = H_CUADRE.indexOf('diferencia');
+  const colInvoiceId = H_CUADRE.indexOf('odoo_invoice_id');
+  const colBillOdoo = H_CUADRE.indexOf('bill_odoo');
+
+  let corregidas = 0, fueraDeMargen = 0, errores = 0;
+
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    if (String(row[colEstado]).trim() !== 'PENDIENTE') continue;
+
+    const diferencia = parseFloat(row[colDif]);
+    if (Math.abs(diferencia) > margen) {
+      fueraDeMargen++;
+      continue;
+    }
+
+    const invoiceId = parseInt(row[colInvoiceId]);
+    try {
+      odooExec(cfg, uid, 'account.move', 'write', [[invoiceId], {
+        invoice_line_ids: [[0, 0, {
+          name: 'Ajuste de redondeo Mews ↔ Odoo',
+          quantity: 1,
+          price_unit: -diferencia, // si Odoo sacó de más, se resta; si de menos, se suma
+          tax_ids: [[6, 0, []]],   // sin IVA, es un ajuste puro
+          account_id: cuentaId,
+        }]]
+      }], {});
+
+      wsCuadre.getRange(i + 1, colEstado + 1).setValue('CORREGIDO_AUTO');
+      corregidas++;
+    } catch (e) {
+      Logger.log(`ERROR corrigiendo ${row[colBillOdoo]}: ` + e.message);
+      wsCuadre.getRange(i + 1, colEstado + 1).setValue('ERROR_CORRECCION');
+      errores++;
+    }
+  }
+
+  ui.alert(
+    '✅ Corrección de redondeos completada\n\n' +
+    `• Corregidas automáticamente (≤ ${margen}€): ${corregidas}\n` +
+    `• Fuera de margen, sin tocar (revisar a mano): ${fueraDeMargen}\n` +
+    `• Errores al corregir: ${errores}`
   );
 }

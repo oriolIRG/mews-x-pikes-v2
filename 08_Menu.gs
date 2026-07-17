@@ -15,6 +15,8 @@ function onOpen() {
     .addItem('2️⃣ Enviar facturas a Odoo', 'importarFacturas')
     .addSeparator()
     .addItem('🔍 Comprobar numeración', 'verificarContinuidad')
+    .addItem('⚖️ Repasar cuadre Gross (facturas antiguas)', 'verificarCuadreConOdoo')
+    .addItem('🧮 Corregir redondeos pequeños', 'corregirRedondeosAutomaticamente')
     .addItem('🔄 Reintentar facturas con error', 'reprocesarErrores')
     .addSeparator()
     .addItem('⚙️ Comprobar configuración', 'verificarConfig')

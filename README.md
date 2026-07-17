@@ -161,6 +161,48 @@ falta un sistema en paralelo.
   agencias): existían en el repo viejo pero no son parte del flujo
   diario del equipo. Se pueden añadir si hacen falta.
 
+## Comprobación de cuadre Gross (Mews vs Odoo)
+
+**Se detecta automáticamente al importar** — justo después de crear
+cada factura, reutilizando la misma lectura que ya se hacía para el
+nombre/partner (sin llamada extra a Odoo), se compara el
+`importe_bruto` que reportó Mews contra el `amount_total` real en
+Odoo. Cualquier discrepancia ≥0,01€ queda registrada en la pestaña
+`CUADRE_GROSS` al momento — no hace falta ningún paso manual aparte
+para las facturas nuevas.
+
+Odoo recalcula el IVA él solo (base × tipo), no usa el que ya trae
+Mews en el JSON, así que pueden aparecer diferencias de 1-2 céntimos
+por redondeos distintos entre los dos sistemas — esto es normal en
+cualquier integración entre dos motores de cálculo independientes, no
+significa que algo esté roto.
+
+Menú → "⚖️ Repasar cuadre Gross (facturas antiguas)" — esto ya NO hace
+falta para facturas nuevas (se detectan solas), pero sirve para
+repasar facturas que se crearon antes de tener esta detección
+integrada, o para forzar un repaso completo bajo demanda. No duplica
+filas: si una factura ya está en `CUADRE_GROSS`, la salta.
+
+Esta comprobación NO fuerza que coincidan (eso sería pelearse con el
+motor de impuestos de Odoo, frágil) — solo detecta y lista cada
+discrepancia para revisión manual antes de saldar cobros.
+
+### Corrección automática de redondeos pequeños
+
+Menú → "🧮 Corregir redondeos pequeños" — para las discrepancias
+dentro de `MARGEN_REDONDEO` (CONFIG, ej. `0.05` = 5 céntimos), añade
+una línea de ajuste a la factura (todavía en borrador) contra la
+cuenta `CUENTA_REDONDEO_ID` (CONFIG), sin IVA, por el importe exacto
+que falta o sobra — el total en Odoo pasa a coincidir exactamente con
+Mews. Las que superen el margen NO se tocan automáticamente, quedan
+marcadas para que alguien las mire a mano.
+
+CONFIG necesario:
+```
+CUENTA_REDONDEO_ID     <id de la cuenta contable para diferencias de redondeo>
+MARGEN_REDONDEO        <margen en euros, ej. 0.05>
+```
+
 ## Fixes aplicados respecto al repo viejo
 
 - `jsonResponse()` estaba usada en 4 sitios y no definida en ningún
