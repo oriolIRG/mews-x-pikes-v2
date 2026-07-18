@@ -327,14 +327,34 @@ function crearDocumentosAjuste555(paraCrear, cfg) {
 // ── 2. Procesar todos los JSONs pendientes en Drive ────────────────
 function procesarJsonsDeDrive() {
   const ui = SpreadsheetApp.getUi();
-  const cfg = getConfig();
 
+  const pendientes = listarJsonsPendientesFacturas();
+  if (pendientes === null) { ui.alert('❌ Falta FOLDER_ID_INBOX en CONFIG.'); return; }
+  if (pendientes.length === 0) { ui.alert('📭 No hay JSONs pendientes en la carpeta inbox.'); return; }
+
+  const confirmar = ui.alert(
+    'Procesar JSONs pendientes',
+    `Se encontraron ${pendientes.length} archivo(s):\n\n` +
+    pendientes.map(f => '• ' + f.getName()).join('\n') +
+    '\n\n¿Procesar y archivar?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirmar !== ui.Button.YES) return;
+
+  const r = procesarJsonsDeDriveCore(pendientes);
+  ui.alert(
+    '✅ Proceso completado\n\n' +
+    `• Archivos procesados: ${r.procesados}\n` +
+    `• Facturas nuevas: ${r.totalFacturas}\n` +
+    `• Errores: ${r.errores}\n\n` + r.detalle.join('\n')
+  );
+}
+
+// Sin UI — la usa tanto el menú (arriba) como el panel web.
+function listarJsonsPendientesFacturas() {
+  const cfg = getConfig();
   const inboxId = cfg['FOLDER_ID_INBOX'];
-  const procesadosId = cfg['FOLDER_ID_PROCESADOS'];
-  if (!inboxId) {
-    ui.alert('❌ Falta FOLDER_ID_INBOX en CONFIG.');
-    return;
-  }
+  if (!inboxId) return null;
 
   const inbox = DriveApp.getFolderById(inboxId);
   const _esClosed = n => n.includes('CLOSED') || (n.includes('ACCOUNTING') && !n.includes('CREATED'));
@@ -350,24 +370,17 @@ function procesarJsonsDeDrive() {
     const f = iter2.next();
     if (_esClosed(f.getName().toUpperCase())) pendientes.push(f);
   }
+  return pendientes;
+}
 
-  if (pendientes.length === 0) {
-    ui.alert('📭 No hay JSONs pendientes en la carpeta inbox.');
-    return;
-  }
-
-  const confirmar = ui.alert(
-    'Procesar JSONs pendientes',
-    `Se encontraron ${pendientes.length} archivo(s):\n\n` +
-    pendientes.map(f => '• ' + f.getName()).join('\n') +
-    '\n\n¿Procesar y archivar?',
-    ui.ButtonSet.YES_NO
-  );
-  if (confirmar !== ui.Button.YES) return;
+// Sin UI — hace el trabajo real, devuelve un resumen en vez de un alert.
+function procesarJsonsDeDriveCore(pendientes) {
+  const cfg = getConfig();
+  const procesadosId = cfg['FOLDER_ID_PROCESADOS'];
+  const carpetaProcesados = procesadosId ? DriveApp.getFolderById(procesadosId) : null;
 
   let totalFacturas = 0, procesados = 0, errores = 0;
   const detalle = [];
-  const carpetaProcesados = procesadosId ? DriveApp.getFolderById(procesadosId) : null;
 
   for (const file of pendientes) {
     const nombre = file.getName();
@@ -396,30 +409,24 @@ function procesarJsonsDeDrive() {
     }
   }
 
-  ui.alert(
-    '✅ Proceso completado\n\n' +
-    `• Archivos procesados: ${procesados}\n` +
-    `• Facturas nuevas: ${totalFacturas}\n` +
-    `• Errores: ${errores}\n\n` + detalle.join('\n')
-  );
+  return { procesados, totalFacturas, errores, detalle };
 }
 
 // ── 3. Enviar facturas PENDIENTES a Odoo ───────────────────────────
-function importarFacturas() {
-  const ui = SpreadsheetApp.getUi();
-
-  try {
-    const cfg = getConfig();
-    const uid = getOdooUid(cfg);
-    const mappings = getMappings(cfg);
+// Sin UI — la usa tanto el wrapper del menú (justo debajo) como el
+// panel web. Lanza si hay un error general (CONFIG faltante, etc.);
+// los errores por factura individual quedan dentro del resultado.
+function importarFacturasCore() {
+  const cfg = getConfig();
+  const uid = getOdooUid(cfg);
+  const mappings = getMappings(cfg);
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const wsFact = ss.getSheetByName(TAB.FACTURAS);
     const wsLin = ss.getSheetByName(TAB.LINEAS);
     const data = wsFact.getDataRange().getValues();
 
     if (data.length < 2) {
-      ui.alert('No hay facturas registradas todavía.');
-      return;
+      throw new Error('No hay facturas registradas todavía.');
     }
 
     const todasLineas = cargarLineas(wsLin);
@@ -564,12 +571,20 @@ function importarFacturas() {
       Utilities.sleep(300);
     }
 
-    let msg = `✅ Proceso completado\n\n• Creadas en Odoo (borrador): ${creadas}\n• Ya existían/saltadas: ${saltadas}\n• Errores: ${errores}`;
-    if (discrepanciasCuadre > 0) msg += `\n• ⚖️ Discrepancias de Gross detectadas: ${discrepanciasCuadre} (ver CUADRE_GROSS)`;
-    if (errores > 0) msg += '\n\nDetalle:\n' + errDetail.slice(0, 5).join('\n');
-    if (creadas > 0) msg += '\n\n📌 Recuerda confirmar las facturas manualmente en Odoo.';
-    ui.alert(msg);
+  return { creadas, saltadas, errores, discrepanciasCuadre, errDetail };
+}
 
+// Wrapper del menú: llama a la versión Core y muestra el resultado
+// con ui.alert. El panel web llama a importarFacturasCore() directamente.
+function importarFacturas() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const r = importarFacturasCore();
+    let msg = `✅ Proceso completado\n\n• Creadas en Odoo (borrador): ${r.creadas}\n• Ya existían/saltadas: ${r.saltadas}\n• Errores: ${r.errores}`;
+    if (r.discrepanciasCuadre > 0) msg += `\n• ⚖️ Discrepancias de Gross detectadas: ${r.discrepanciasCuadre} (ver CUADRE_GROSS)`;
+    if (r.errores > 0) msg += '\n\nDetalle:\n' + r.errDetail.slice(0, 5).join('\n');
+    if (r.creadas > 0) msg += '\n\n📌 Recuerda confirmar las facturas manualmente en Odoo.';
+    ui.alert(msg);
   } catch (err) {
     ui.alert(`❌ Error general: ${err.message}`);
     Logger.log('ERROR importarFacturas: ' + err.message + '\n' + err.stack);
@@ -790,6 +805,18 @@ function registrarDiscrepanciaCuadre(billMews, billOdoo, invoiceId, grossMews, g
 // todo de golpe. Las nuevas ya se detectan solas al importar.
 function verificarCuadreConOdoo() {
   const ui = SpreadsheetApp.getUi();
+  const r = verificarCuadreConOdooCore();
+  ui.alert(
+    '✅ Repaso completo terminado\n\n' +
+    `• Facturas comprobadas (no detectadas antes): ${r.comprobadas}\n` +
+    `• Discrepancias nuevas encontradas: ${r.nuevasDiscrepancias}\n` +
+    `• Diferencia acumulada de las nuevas: ${r.sumaDiferencia.toFixed(2)}€\n\n` +
+    'Detalle acumulado en la pestaña CUADRE_GROSS (incluye también las detectadas automáticamente al importar).'
+  );
+}
+
+// Sin UI — la usa el wrapper de arriba y el panel web.
+function verificarCuadreConOdooCore() {
   const cfg = getConfig();
   const uid = getOdooUid(cfg);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -799,8 +826,6 @@ function verificarCuadreConOdoo() {
   let comprobadas = 0, nuevasDiscrepancias = 0;
   let sumaDiferencia = 0;
 
-  // Bills que ya están registrados en CUADRE_GROSS, para no duplicar
-  // filas si esta factura ya se detectó al vuelo durante el import.
   const wsCuadreExistente = ss.getSheetByName('CUADRE_GROSS');
   const yaRegistrados = new Set(
     wsCuadreExistente && wsCuadreExistente.getLastRow() > 1
@@ -815,7 +840,7 @@ function verificarCuadreConOdoo() {
     if (estado !== 'CREADA' || !invoiceId) continue;
 
     const billMews = row[H_FACT.indexOf('bill_mews')];
-    if (yaRegistrados.has(String(billMews))) continue; // ya detectada antes
+    if (yaRegistrados.has(String(billMews))) continue;
 
     const billOdoo = row[H_FACT.indexOf('bill_odoo')];
     const grossMews = Math.abs(parseFloat(row[H_FACT.indexOf('importe_bruto')]) || 0);
@@ -838,13 +863,7 @@ function verificarCuadreConOdoo() {
     }
   }
 
-  ui.alert(
-    '✅ Repaso completo terminado\n\n' +
-    `• Facturas comprobadas (no detectadas antes): ${comprobadas}\n` +
-    `• Discrepancias nuevas encontradas: ${nuevasDiscrepancias}\n` +
-    `• Diferencia acumulada de las nuevas: ${sumaDiferencia.toFixed(2)}€\n\n` +
-    'Detalle acumulado en la pestaña CUADRE_GROSS (incluye también las detectadas automáticamente al importar).'
-  );
+  return { comprobadas, nuevasDiscrepancias, sumaDiferencia };
 }
 
 // ── Corrección automática de redondeos pequeños ─────────────────────
@@ -855,19 +874,33 @@ function verificarCuadreConOdoo() {
 // que superen el margen NO se tocan, se quedan para revisión manual.
 function corregirRedondeosAutomaticamente() {
   const ui = SpreadsheetApp.getUi();
+  try {
+    const r = corregirRedondeosAutomaticamenteCore();
+    ui.alert(
+      '✅ Corrección de redondeos completada\n\n' +
+      `• Corregidas automáticamente (≤ ${r.margen}€): ${r.corregidas}\n` +
+      `• Fuera de margen, sin tocar (revisar a mano): ${r.fueraDeMargen}\n` +
+      `• Errores al corregir: ${r.errores}`
+    );
+  } catch (e) {
+    ui.alert('❌ ' + e.message);
+  }
+}
+
+// Sin UI — la usa el wrapper de arriba y el panel web.
+function corregirRedondeosAutomaticamenteCore() {
   const cfg = getConfig();
   const uid = getOdooUid(cfg);
   const cuentaId = parseInt(cfg['CUENTA_REDONDEO_ID']);
   const margen = parseFloat(cfg['MARGEN_REDONDEO']);
 
-  if (!cuentaId) { ui.alert('❌ Falta CUENTA_REDONDEO_ID en CONFIG.'); return; }
-  if (isNaN(margen)) { ui.alert('❌ Falta MARGEN_REDONDEO en CONFIG (ej. 0.05).'); return; }
+  if (!cuentaId) throw new Error('Falta CUENTA_REDONDEO_ID en CONFIG.');
+  if (isNaN(margen)) throw new Error('Falta MARGEN_REDONDEO en CONFIG (ej. 0.05).');
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const wsCuadre = ss.getSheetByName('CUADRE_GROSS');
   if (!wsCuadre || wsCuadre.getLastRow() < 2) {
-    ui.alert('No hay nada en CUADRE_GROSS. Ejecuta primero "Comprobar cuadre Gross".');
-    return;
+    throw new Error('No hay nada en CUADRE_GROSS. Ejecuta primero "Comprobar cuadre Gross".');
   }
 
   const data = wsCuadre.getDataRange().getValues();
@@ -895,8 +928,8 @@ function corregirRedondeosAutomaticamente() {
         invoice_line_ids: [[0, 0, {
           name: 'Ajuste de redondeo Mews ↔ Odoo',
           quantity: 1,
-          price_unit: -diferencia, // si Odoo sacó de más, se resta; si de menos, se suma
-          tax_ids: [[6, 0, []]],   // sin IVA, es un ajuste puro
+          price_unit: -diferencia,
+          tax_ids: [[6, 0, []]],
           account_id: cuentaId,
         }]]
       }], {});
@@ -910,10 +943,5 @@ function corregirRedondeosAutomaticamente() {
     }
   }
 
-  ui.alert(
-    '✅ Corrección de redondeos completada\n\n' +
-    `• Corregidas automáticamente (≤ ${margen}€): ${corregidas}\n` +
-    `• Fuera de margen, sin tocar (revisar a mano): ${fueraDeMargen}\n` +
-    `• Errores al corregir: ${errores}`
-  );
+  return { corregidas, fueraDeMargen, errores, margen };
 }

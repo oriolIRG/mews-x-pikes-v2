@@ -36,16 +36,35 @@
 
 function procesarSaldarFacturas() {
   const ui = SpreadsheetApp.getUi();
-  const cfg = getConfig();
-  const uid = getOdooUid(cfg);
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  const wsPagos = ss.getSheetByName(TAB.PAGOS);
-  if (!wsPagos || wsPagos.getLastRow() < 2) {
-    ui.alert('No hay pagos pendientes en PAGOS_CLOSED todavía.');
+  const porFecha = agruparPagosPendientesPorFecha();
+  if (porFecha === null) { ui.alert('No hay pagos pendientes en PAGOS_CLOSED todavía.'); return; }
+
+  const fechas = Object.keys(porFecha).sort();
+  if (fechas.length === 0) {
+    ui.alert('No hay pagos con estado PENDIENTE (excluyendo bills técnicos).');
     return;
   }
 
+  const confirmar = ui.alert(
+    'Saldar facturas',
+    `Se van a procesar ${fechas.length} día(s):\n` + fechas.map(f => '  • ' + f).join('\n') + '\n\n¿Continuar?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirmar !== ui.Button.YES) return;
+
+  const resumen = procesarSaldarFacturasCore(porFecha, fechas);
+  ui.alert('✅ Proceso completado\n\n' + resumen.join('\n'));
+}
+
+// Sin UI — agrupa los pagos PENDIENTE por fecha_cierre. Devuelve null
+// si ni siquiera existe la pestaña o está vacía.
+function agruparPagosPendientesPorFecha() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const wsPagos = ss.getSheetByName(TAB.PAGOS);
+  if (!wsPagos || wsPagos.getLastRow() < 2) return null;
+
+  const cfg = getConfig();
   const excluirBills = (cfg['FASE4_BILLS_EXCLUIR'] || '').split('|').map(s => s.trim()).filter(Boolean);
 
   const data = wsPagos.getDataRange().getValues();
@@ -67,20 +86,13 @@ function procesarSaldarFacturas() {
     if (!porFecha[fecha]) porFecha[fecha] = [];
     porFecha[fecha].push({ rowNum: i + 1, bill, code: String(row[H_PAGOS.indexOf('code')]).trim(), amount: parseFloat(row[H_PAGOS.indexOf('amount')]) });
   }
+  return porFecha;
+}
 
-  const fechas = Object.keys(porFecha).sort();
-  if (fechas.length === 0) {
-    ui.alert('No hay pagos con estado PENDIENTE (excluyendo bills técnicos).');
-    return;
-  }
-
-  const confirmar = ui.alert(
-    'Saldar facturas',
-    `Se van a procesar ${fechas.length} día(s):\n` + fechas.map(f => '  • ' + f).join('\n') + '\n\n¿Continuar?',
-    ui.ButtonSet.YES_NO
-  );
-  if (confirmar !== ui.Button.YES) return;
-
+// Sin UI — hace el trabajo real, devuelve el resumen por día.
+function procesarSaldarFacturasCore(porFecha, fechas) {
+  const cfg = getConfig();
+  const uid = getOdooUid(cfg);
   const resumen = [];
   for (const fecha of fechas) {
     try {
@@ -91,8 +103,7 @@ function procesarSaldarFacturas() {
       Logger.log('ERROR saldarFacturasDelDia ' + fecha + ': ' + e.message);
     }
   }
-
-  ui.alert('✅ Proceso completado\n\n' + resumen.join('\n'));
+  return resumen;
 }
 
 function saldarFacturasDelDia(cfg, uid, fecha, pagosDelDia) {

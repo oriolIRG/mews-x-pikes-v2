@@ -27,24 +27,10 @@
 
 function procesarJsonsDeDriveCobros() {
   const ui = SpreadsheetApp.getUi();
-  const cfg = getConfig();
 
-  const inboxId = cfg['FOLDER_ID_INBOX'];
-  const procesadosId = cfg['FOLDER_ID_PROCESADOS'];
-  if (!inboxId) { ui.alert('❌ Falta FOLDER_ID_INBOX en CONFIG.'); return; }
-
-  const inbox = DriveApp.getFolderById(inboxId);
-  const pendientes = [];
-  const iter = inbox.getFiles();
-  while (iter.hasNext()) {
-    const f = iter.next();
-    if (f.getName().toUpperCase().includes('PAYMENT')) pendientes.push(f);
-  }
-
-  if (pendientes.length === 0) {
-    ui.alert('📭 No hay JSONs de Payment report pendientes en la carpeta inbox.');
-    return;
-  }
+  const pendientes = listarJsonsPendientesCobros();
+  if (pendientes === null) { ui.alert('❌ Falta FOLDER_ID_INBOX en CONFIG.'); return; }
+  if (pendientes.length === 0) { ui.alert('📭 No hay JSONs de Payment report pendientes en la carpeta inbox.'); return; }
 
   const confirmar = ui.alert(
     'Procesar Payment reports pendientes',
@@ -55,6 +41,30 @@ function procesarJsonsDeDriveCobros() {
   );
   if (confirmar !== ui.Button.YES) return;
 
+  const resultados = procesarJsonsDeDriveCobrosCore(pendientes);
+  ui.alert('✅ Proceso completado\n\n' + resultados.join('\n'));
+}
+
+// Sin UI — la usa el wrapper de arriba y el panel web.
+function listarJsonsPendientesCobros() {
+  const cfg = getConfig();
+  const inboxId = cfg['FOLDER_ID_INBOX'];
+  if (!inboxId) return null;
+
+  const inbox = DriveApp.getFolderById(inboxId);
+  const pendientes = [];
+  const iter = inbox.getFiles();
+  while (iter.hasNext()) {
+    const f = iter.next();
+    if (f.getName().toUpperCase().includes('PAYMENT')) pendientes.push(f);
+  }
+  return pendientes;
+}
+
+// Sin UI — hace el trabajo real, devuelve la lista de resultados.
+function procesarJsonsDeDriveCobrosCore(pendientes) {
+  const cfg = getConfig();
+  const procesadosId = cfg['FOLDER_ID_PROCESADOS'];
   const carpetaProcesados = procesadosId ? DriveApp.getFolderById(procesadosId) : null;
   const resultados = [];
 
@@ -73,7 +83,7 @@ function procesarJsonsDeDriveCobros() {
     }
   }
 
-  ui.alert('✅ Proceso completado\n\n' + resultados.join('\n'));
+  return resultados;
 }
 
 function crearAsientoCobrosDelDia(data) {

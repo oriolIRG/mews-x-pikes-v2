@@ -422,3 +422,52 @@ antes de este fix**, con `invoice_date` un día antes del real — vale
 la pena revisar alguna factura de las primeras pruebas y comprobar la
 fecha contra el `Closed` real del JSON, por si hace falta corregir
 alguna a mano.
+
+## Panel de control (Web App)
+
+Interfaz web propia dentro del mismo proyecto de Apps Script — no es
+código nuevo de negocio, es una capa fina (`12_PanelWeb.gs` +
+`Panel.html`) sobre las mismas funciones `*Core` que ya usa el menú.
+Pensado para gente no técnica del equipo, uso diario.
+
+### Cómo funciona
+
+- `12_PanelWeb.gs` añade `doGet(e)` (sirve el HTML) y unas funciones
+  `panelXxx()` que llaman a las mismas `*Core` de siempre y devuelven
+  objetos planos — nunca objetos de Drive/Sheets, porque
+  `google.script.run` (el puente entre el HTML y Apps Script) no
+  puede serializarlos.
+- `Panel.html` es la interfaz: un semáforo de estado por fase y un
+  botón por acción. Llama a las funciones `panelXxx()` vía
+  `google.script.run` y pinta el resultado, sin usar ningún
+  `ui.alert()` (por eso hicieron falta las versiones `*Core` de cada
+  función — `ui.alert()` revienta si no hay una hoja abierta detrás,
+  como ya vimos con el disparador automático de Huéspedes).
+
+### Desplegar
+
+Extensiones → Apps Script → pega `12_PanelWeb.gs` y crea un archivo
+HTML nuevo llamado exactamente **`Panel`** (Archivo → Nuevo → Html,
+Apps Script le añade `.html` solo) con el contenido de `Panel.html`.
+
+Implementar → Nueva implementación → Aplicación web → ejecutar como
+tú, acceso a quien vaya a usarlo (tu dominio de Google Workspace, o
+"Cualquier usuario con cuenta de Google" si hace falta). Copia la
+URL — esa es la del panel.
+
+Puedes reusar el mismo proyecto que ya tiene el webhook (`doPost`) —
+Apps Script distingue solas las peticiones por verbo HTTP (GET =
+panel, POST = webhook de Mews), así que no hay conflicto. Si
+prefieres URLs separadas para no mezclar "la URL que le doy a Mews"
+con "la URL que uso yo", crea una implementación nueva del mismo
+proyecto — cada implementación tiene su propia URL aunque compartan
+código.
+
+### Qué NO hace (a propósito, de momento)
+
+No reemplaza los pasos manuales en Odoo (confirmar facturas, revisar
+discrepancias grandes) — sigue siendo "aprieta el botón, luego ve a
+Odoo a confirmar". Tampoco bloquea físicamente que se salte el orden
+de las fases (los botones no se deshabilitan según el estado) —
+solo informa con el semáforo. Si con el uso real se ve que hace falta
+más guía o bloqueo, es una mejora para después, no para hoy.
