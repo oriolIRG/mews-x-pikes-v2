@@ -406,3 +406,19 @@ Menú → "✅ Saldar facturas (Fase 4)".
   +295,3€). Con los dos corregidos, el cuadre es exacto matemáticamente
   para cualquier mezcla de cobros y reembolsos ese día, no solo para
   el caso sin reembolsos.
+
+## ⚠️ Aviso importante: posible desplazamiento de un día en fechas ya creadas
+
+`formatFechaOdoo()` usaba `.toISOString()` (siempre UTC) para las
+fechas de factura de Fase 1 y de agrupación de Fase 4. Si Sheets
+convirtió una celda de texto ISO a tipo Fecha (algo que hace solo,
+sin avisar), el `Date` resultante representa medianoche en Madrid —
+y `.toISOString()` lo pasaba a UTC, perdiendo un día (medianoche CEST
+= 22:00 del día anterior en UTC). Ya está arreglado con
+`Utilities.formatDate(..., 'Europe/Madrid', ...)`.
+
+**Esto pudo haber afectado a facturas de Fase 1 ya creadas en Odoo
+antes de este fix**, con `invoice_date` un día antes del real — vale
+la pena revisar alguna factura de las primeras pruebas y comprobar la
+fecha contra el `Closed` real del JSON, por si hace falta corregir
+alguna a mano.

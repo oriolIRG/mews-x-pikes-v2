@@ -220,5 +220,5 @@ function extraerFechaReporteCobros(data) {
       }
     }
   }
-  return new Date().toISOString().split('T')[0];
+  return Utilities.formatDate(new Date(), 'Europe/Madrid', 'yyyy-MM-dd');
 }
