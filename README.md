@@ -230,6 +230,15 @@ Cómo se llega al nombre `<CATEGORIA>`: el texto de `Accounting category`
 en mayúsculas, con espacios/guiones convertidos a `_`. Ej.
 `"CASH - RECEPTION"` → `CASH_RECEPTION`.
 
+Las cuentas **dedicadas** llevan una línea por categoría (con su
+etiqueta específica). Las **contrapartidas** se agrupan y suman por
+cuenta — si varias categorías comparten la misma contrapartida (ej.
+Paylands y Pikes Web ambas van a 438100), sale como una sola línea
+sumada, con etiqueta genérica (`COBRO_ETIQUETA_GENERICA`, por defecto
+"Cobros MEWS del día"; `COBRO_ETIQUETA_GENERICA_REEMBOLSO` para
+reembolsos, por defecto "Reembolsos MEWS del día") — igual que en el
+asiento real usado de referencia para diseñar esto.
+
 **Cobros y reembolsos van en líneas separadas, sin netear** — un
 reembolso usa la misma cuenta dedicada de su categoría, pero en el
 Haber (y su contrapartida en el Debe), como línea aparte.

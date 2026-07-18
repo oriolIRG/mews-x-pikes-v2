@@ -125,8 +125,18 @@ function crearAsientoCobrosDelDia(data) {
   }
 
   // 3. Construir las líneas del asiento a partir de CONFIG
+  // Las cuentas DEDICADAS van una línea por categoría (con su propia
+  // etiqueta). Las CONTRAPARTIDAS se agrupan y suman por cuenta —
+  // varias categorías pueden compartir la misma contrapartida (ej.
+  // Paylands y Pikes Web ambas van a 438100), y en el asiento real
+  // que usamos de referencia salían como una sola línea sumada, con
+  // etiqueta genérica, no una por categoría.
   const lineas = [];
   const categoriasSinMapeo = new Set();
+  const contrapartidas = {}; // key: `${contrapartidaId}|||${tipo}` → suma
+
+  const etiquetaGenericaCobro = cfg['COBRO_ETIQUETA_GENERICA'] || 'Cobros MEWS del día';
+  const etiquetaGenericaReembolso = cfg['COBRO_ETIQUETA_GENERICA_REEMBOLSO'] || 'Reembolsos MEWS del día';
 
   for (const [key, suma] of Object.entries(grupos)) {
     const [categoriaTexto, tipo] = key.split('|||');
@@ -145,17 +155,31 @@ function crearAsientoCobrosDelDia(data) {
 
     if (tipo === 'COBRO') {
       lineas.push({ account_id: cuentaId, name: etiqueta, debit: importe, credit: 0 });
-      lineas.push({ account_id: contrapartidaId, name: etiqueta, debit: 0, credit: importe });
     } else {
       // Reembolso: mismo criterio que confirmaste — misma cuenta dedicada,
       // pero en el Haber, en línea aparte (no neteada con los cobros).
       lineas.push({ account_id: cuentaId, name: `${etiqueta} (reembolso)`, debit: 0, credit: importe });
-      lineas.push({ account_id: contrapartidaId, name: `${etiqueta} (reembolso)`, debit: importe, credit: 0 });
     }
+
+    const keyContra = `${contrapartidaId}|||${tipo}`;
+    contrapartidas[keyContra] = (contrapartidas[keyContra] || 0) + importe;
   }
 
   if (categoriasSinMapeo.size > 0) {
     throw new Error('Categorías sin mapeo en CONFIG: ' + [...categoriasSinMapeo].join(' | '));
+  }
+
+  // Líneas de contrapartida: una por cuenta (sumada), no por categoría
+  for (const [keyContra, importeSumado] of Object.entries(contrapartidas)) {
+    const [contrapartidaIdTexto, tipo] = keyContra.split('|||');
+    const contrapartidaId = parseInt(contrapartidaIdTexto);
+    const importe = Math.round(importeSumado * 100) / 100;
+
+    if (tipo === 'COBRO') {
+      lineas.push({ account_id: contrapartidaId, name: etiquetaGenericaCobro, debit: 0, credit: importe });
+    } else {
+      lineas.push({ account_id: contrapartidaId, name: etiquetaGenericaReembolso, debit: importe, credit: 0 });
+    }
   }
 
   // 4. Crear el asiento
