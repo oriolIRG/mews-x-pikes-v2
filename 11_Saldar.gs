@@ -218,16 +218,39 @@ function saldarFacturasDelDia(cfg, uid, fecha, pagosDelDia) {
     }
   }
 
-  // 4. Crear, validar y conciliar
-  const entryId = odooExec(cfg, uid, 'account.move', 'create', [{
-    move_type: 'entry', journal_id: journalId, company_id: companyId,
-    date: fecha, ref: ref, line_ids: lineas.map(l => [0, 0, l]),
-  }], {});
+  // 4. Crear, validar y conciliar — con la misma protección contra el
+  // error cosmético de serialización de Odoo 19 en los tres pasos,
+  // no solo en reconcile() como al principio: si create() o
+  // action_post() lanzan un error con pinta de fallo de serialización
+  // (dumps/xmlrpc/Traceback), se verifica el resultado real antes de
+  // dar el fallo por bueno.
+  let entryId;
+  try {
+    entryId = odooExec(cfg, uid, 'account.move', 'create', [{
+      move_type: 'entry', journal_id: journalId, company_id: companyId,
+      date: fecha, ref: ref, line_ids: lineas.map(l => [0, 0, l]),
+    }], {});
+  } catch (eCreate) {
+    if (!esErrorSerializacionOdoo_(eCreate)) throw eCreate;
+    const check = odooExec(cfg, uid, 'account.move', 'search_read',
+      [[['ref', '=', ref], ['journal_id', '=', journalId]]], { fields: ['id'], limit: 1 });
+    if (!check || check.length === 0) {
+      throw new Error(`create() falló de verdad (no aparece el asiento después): ${eCreate.message}`);
+    }
+    entryId = check[0].id;
+  }
 
   try {
     odooExec(cfg, uid, 'account.move', 'action_post', [[entryId]], {});
-  } catch (e) {
-    throw new Error(`Asiento creado (id ${entryId}) pero no se pudo validar: ${e.message}`);
+  } catch (ePost) {
+    if (!esErrorSerializacionOdoo_(ePost)) {
+      throw new Error(`Asiento creado (id ${entryId}) pero no se pudo validar: ${ePost.message}`);
+    }
+    const check = odooExec(cfg, uid, 'account.move', 'read', [[entryId]], { fields: ['state'] });
+    if (!check[0] || check[0].state !== 'posted') {
+      throw new Error(`Asiento creado (id ${entryId}) pero action_post() falló de verdad (sigue en "${check[0] ? check[0].state : '?'}"): ${ePost.message}`);
+    }
+    // si state === 'posted', error cosmético, se sigue igual
   }
 
   const errores = conciliarFacturasFase4(cfg, uid, entryId, facturasAConciliar, cta430);
@@ -249,6 +272,17 @@ function saldarFacturasDelDia(cfg, uid, fecha, pagosDelDia) {
 // correcto): el reconcile() de Odoo 19 a veces lanza un error de
 // serialización XML-RPC aunque la conciliación SÍ se ejecutó — se
 // verifica leyendo el estado real antes de dar el error por bueno.
+// Detecta si un error de Odoo tiene pinta del fallo cosmético de
+// serialización XML-RPC de Odoo 19 (la operación se ejecuta bien en
+// el servidor, pero la respuesta no se serializa de vuelta). No es
+// una certeza — solo un indicio para saber cuándo vale la pena
+// verificar el resultado real en vez de dar el error por bueno.
+function esErrorSerializacionOdoo_(e) {
+  return !!(e.message && (
+    e.message.includes('dumps') || e.message.includes('xmlrpc') || e.message.includes('Traceback')
+  ));
+}
+
 function conciliarFacturasFase4(cfg, uid, entryId, facturas, cta430) {
   const errores = [];
 
@@ -275,10 +309,7 @@ function conciliarFacturasFase4(cfg, uid, entryId, facturas, cta430) {
       try {
         odooExec(cfg, uid, 'account.move.line', 'reconcile', [[lineaAsiento.id, lineaFactura[0].id]], {});
       } catch (eReconcile) {
-        const esErrorSerializacion = eReconcile.message && (
-          eReconcile.message.includes('dumps') || eReconcile.message.includes('xmlrpc') || eReconcile.message.includes('Traceback')
-        );
-        if (esErrorSerializacion) {
+        if (esErrorSerializacionOdoo_(eReconcile)) {
           const check = odooExec(cfg, uid, 'account.move.line', 'search_read',
             [[['id', '=', lineaFactura[0].id], ['reconciled', '=', true]]], { fields: ['id'], limit: 1 });
           if (!(check && check.length > 0)) {
