@@ -15,6 +15,7 @@ function onOpen() {
     .addItem('2️⃣ Enviar facturas a Odoo', 'importarFacturas')
     .addSeparator()
     .addItem('💶 Cargar cobros de Mews (Fase 2)', 'procesarJsonsDeDriveCobros')
+    .addItem('✅ Saldar facturas (Fase 4)', 'procesarSaldarFacturas')
     .addSeparator()
     .addItem('🔍 Comprobar numeración', 'verificarContinuidad')
     .addItem('⚖️ Repasar cuadre Gross (facturas antiguas)', 'verificarCuadreConOdoo')

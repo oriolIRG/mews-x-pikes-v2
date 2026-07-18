@@ -127,38 +127,107 @@ function parsearClosed(data) {
 
   reordenarYRecalcularContinuidad();
   avisarBillsSoloPago(items, cfg);
+  extraerPagosParaFase4(items);
 
   return { nFacturas: nuevasFacturas.length, nLineas: nuevasLineas.length };
 }
 
-// ── Detectar bills "solo con pagos" (sin ninguna línea Revenue) ────
-// Error operativo real (confirmado): un bill nunca debería tener
-// líneas de Payment sin ninguna línea de Revenue — significa que se
-// registró un cobro/reembolso sin la factura o abono correspondiente.
-// Estos bills NUNCA llegan a FACTURAS (no hay nada que facturar), así
-// que no se pueden detectar desde ahí — hay que mirarlo aquí, con el
-// JSON original en la mano, y dejar aviso en HUECOS_NUMERACION.
+// ── Extraer líneas Type: Payment para Fase 4 (Saldar) ──────────────
+// Fase 1 solo usa Type: Revenue para las facturas — estas líneas de
+// pago no se usan aquí, se guardan para cuando Fase 4 las necesite,
+// más adelante, una vez las facturas estén confirmadas en Odoo.
+function extraerPagosParaFase4(items) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let wsPagos = ss.getSheetByName(TAB.PAGOS);
+  if (!wsPagos) {
+    wsPagos = ss.insertSheet(TAB.PAGOS);
+    wsPagos.getRange(1, 1, 1, H_PAGOS.length).setValues([H_PAGOS]);
+    wsPagos.getRange(1, 1, 1, H_PAGOS.length).setFontWeight('bold');
+    wsPagos.setFrozenRows(1);
+  }
+
+  // Dedup: no reinsertar la misma línea si este JSON ya se procesó
+  // antes (bill + code + amount + fecha, como huella).
+  const existentes = wsPagos.getDataRange().getValues();
+  const huellas = new Set();
+  for (let i = 1; i < existentes.length; i++) {
+    huellas.add(`${existentes[i][0]}|||${existentes[i][1]}|||${existentes[i][2]}|||${existentes[i][3]}`);
+  }
+
+  const nuevas = [];
+  for (const item of items) {
+    if (item['Type'] !== 'Payment') continue;
+    const bill = String(item['Bill'] || '').trim();
+    if (!bill) continue;
+    const code = String(item['Code'] || '').trim();
+    const amount = parseFloat(item['Amount']);
+    if (isNaN(amount) || amount === 0) continue;
+    const fecha = String(item['Closed'] || '').split('T')[0];
+
+    const huella = `${bill}|||${code}|||${amount}|||${fecha}`;
+    if (huellas.has(huella)) continue;
+    huellas.add(huella);
+
+    nuevas.push([bill, code, amount, fecha, 'PENDIENTE', '']);
+  }
+
+  if (nuevas.length > 0) {
+    wsPagos.getRange(wsPagos.getLastRow() + 1, 1, nuevas.length, H_PAGOS.length).setValues(nuevas);
+  }
+}
+
+// ── Bills "solo con pagos" (sin ninguna línea Revenue) ──────────────
+// Dos casos, distinto tratamiento:
+//  - Si sus pagos netean a CERO (ej. un cobro fallido + repetido por
+//    otro canal): se crea un documento a 0€ en Odoo, con una línea
+//    por cada movimiento de pago real, TODAS contra la cuenta 555
+//    (CUENTA_REDONDEO_ID) — así el efecto contable neto es cero, pero
+//    las dos patas del error quedan visibles y la numeración no deja
+//    un hueco. Tipo de documento por serie: si el Bill type code
+//    empieza por "R" (RPHF/RPHC), abono; si no, factura normal.
+//  - Si NO netean a cero: sigue siendo un error operativo real (dinero
+//    sin factura) — se avisa en HUECOS_NUMERACION, no se inventa nada.
 // Los "Payment Bill" (PB) y cualquier tipo en BILL_TYPE_EXCLUIR se
-// excluyen: esos ya se ignoran a propósito, no es un error.
+// excluyen de ambos casos: esos ya se ignoran a propósito.
 function avisarBillsSoloPago(items, cfg) {
   const excluidosBillType = (cfg['BILL_TYPE_EXCLUIR'] || '').split('|').map(s => s.trim()).filter(Boolean);
 
   const billsConRevenue = new Set();
   const primeraLineaPorBill = {};
+  const lineasPagoPorBill = {};
   for (const item of items) {
     const bill = String(item['Bill'] || '').trim();
     if (!bill) continue;
     if (item['Type'] === 'Revenue') billsConRevenue.add(bill);
     if (!primeraLineaPorBill[bill]) primeraLineaPorBill[bill] = item;
+    if (item['Type'] === 'Payment') {
+      if (!lineasPagoPorBill[bill]) lineasPagoPorBill[bill] = [];
+      lineasPagoPorBill[bill].push(item);
+    }
   }
 
+  const paraCrear = [];
   const sospechosos = [];
+
   for (const [bill, item] of Object.entries(primeraLineaPorBill)) {
     if (billsConRevenue.has(bill)) continue;
     const billTypeCode = String(item['Bill type code'] || '').trim();
     if (!billTypeCode || billTypeCode === 'PB' || excluidosBillType.includes(billTypeCode)) continue;
-    sospechosos.push({ bill, billTypeCode });
+
+    const lineasPago = lineasPagoPorBill[bill] || [];
+    const totalPago = lineasPago.reduce((s, l) => s + (parseFloat(l['Amount']) || 0), 0);
+
+    if (Math.abs(totalPago) < 0.01 && lineasPago.length > 0) {
+      paraCrear.push({ bill, billTypeCode, lineasPago });
+    } else {
+      sospechosos.push({ bill, billTypeCode });
+    }
   }
+
+  if (paraCrear.length > 0) {
+    crearDocumentosAjuste555(paraCrear, cfg);
+  }
+
   if (sospechosos.length === 0) return;
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -185,6 +254,61 @@ function avisarBillsSoloPago(items, cfg) {
 
   if (nuevasFilas.length > 0) {
     wsHuecos.getRange(wsHuecos.getLastRow() + 1, 1, nuevasFilas.length, 5).setValues(nuevasFilas);
+  }
+}
+
+// Crea, para cada bill "solo pagos que suman cero", un documento a 0€
+// con una línea por movimiento de pago real, todas contra la cuenta
+// 555 — mismo circuito que una factura normal (FACTURAS/FACTURAS_LINEAS,
+// PENDIENTE, pasa por importarFacturas), solo que las líneas llevan el
+// marcador 'AJUSTE_555' en vez de un producto real.
+function crearDocumentosAjuste555(paraCrear, cfg) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const wsFact = ss.getSheetByName(TAB.FACTURAS);
+  const wsLin = ss.getSheetByName(TAB.LINEAS);
+
+  const yaRegistradas = getValoresExistentes(wsFact, 'bill_mews', H_FACT);
+
+  const nuevasFacturas = [];
+  const nuevasLineas = [];
+
+  for (const { bill, billTypeCode, lineasPago } of paraCrear) {
+    if (yaRegistradas.has(bill)) continue;
+
+    const serie = billTypeCode;
+    const billOdoo = formatearNumeroFactura(bill, serie);
+    const numFactura = extraerNumeroFactura(bill);
+    const primeraLinea = lineasPago[0];
+    const clienteNif = String(primeraLinea['Associated tax ID'] || primeraLinea['Owner tax ID'] || '').trim();
+    const clienteNombre = String(primeraLinea['Owner'] || '').trim();
+    const reservationNum = String(primeraLinea['Reservation number'] || '').trim();
+    const { localizador, agencia } = buscarLocalizador(reservationNum);
+
+    nuevasFacturas.push([
+      bill, billOdoo, serie, numFactura, primeraLinea['Closed'] || '',
+      reservationNum, localizador, agencia,
+      clienteNif, clienteNombre, '',
+      lineasPago.length, '0.00', '',
+      '', 'PENDIENTE', '', '',
+      'Documento de ajuste a 0€ — cobro corregido por otro canal, sin efecto neto (ver líneas)'
+    ]);
+
+    lineasPago.forEach((l, i) => {
+      const code = String(l['Code'] || '').trim();
+      const amount = parseFloat(l['Amount']) || 0;
+      nuevasLineas.push([
+        bill, i + 1, code, `Ajuste operativo — pago vía ${code}`, '',
+        amount, 0, amount,
+        'AJUSTE_555', '', serie
+      ]);
+    });
+
+    yaRegistradas.add(bill);
+  }
+
+  if (nuevasFacturas.length > 0) {
+    appendRows(wsFact, nuevasFacturas);
+    appendRows(wsLin, nuevasLineas);
   }
 }
 
@@ -335,15 +459,34 @@ function importarFacturas() {
         const lineas = todasLineas[billMews] || [];
         if (lineas.length === 0) throw new Error('Sin líneas de detalle. Vuelve a importar el Closed.');
 
-        const isRefund = importeTotal < 0;
+        // Documentos de ajuste a 0€ (bills "solo pagos que suman
+        // cero"): el importe total es 0, así que el signo no dice
+        // nada — el tipo de documento se decide por la serie (R... =
+        // abono, igual que en todo lo demás).
+        const esAjuste555 = lineas.some(l => l.odoo_product_id === 'AJUSTE_555');
+        const isRefund = esAjuste555 ? serie.startsWith('R') : importeTotal < 0;
+        const cuenta555Id = esAjuste555 ? parseInt(cfg['CUENTA_REDONDEO_ID']) : null;
+        if (esAjuste555 && !cuenta555Id) throw new Error('Falta CUENTA_REDONDEO_ID en CONFIG (necesaria para documentos de ajuste).');
 
         const invoiceLines = lineas.map(l => {
-          const productId = mappings.productos[l.mews_code] || false;
-          const taxId = mappings.vat[String(l.vat_rate)] || false;
-
           // Signo desde la perspectiva del documento en Odoo:
           // factura normal → net tal cual; abono → signo invertido.
           const netDoc = isRefund ? -l.net : l.net;
+
+          if (l.odoo_product_id === 'AJUSTE_555') {
+            // Línea de ajuste: va directa a la cuenta 555, sin
+            // producto, sin IVA, sin analítica — no es una venta real.
+            return [0, 0, {
+              account_id: cuenta555Id,
+              price_unit: Math.abs(netDoc),
+              quantity: netDoc < 0 ? -1 : 1,
+              tax_ids: [[6, 0, []]],
+              name: l.descripcion || l.mews_code,
+            }];
+          }
+
+          const productId = mappings.productos[l.mews_code] || false;
+          const taxId = mappings.vat[String(l.vat_rate)] || false;
 
           return [0, 0, {
             product_id: productId,

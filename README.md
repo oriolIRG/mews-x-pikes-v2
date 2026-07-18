@@ -252,6 +252,57 @@ existe uno con esa referencia, no se duplica.
 
 Menú → "💶 Cargar cobros de Mews (Fase 2)".
 
+## Fase 4 — Saldar facturas (nuevo)
+
+Concilia cada factura contra sus pagos reales, usando las líneas
+`Type: Payment` del mismo Closed report que ya procesa Fase 1 (se
+guardan solas en la pestaña `PAGOS_CLOSED` al parsear, sin que haga
+falta ningún archivo nuevo). Solo se puede ejecutar cuando las
+facturas de esos días ya están **confirmadas** en Odoo, no en
+borrador — por eso es una fase aparte y posterior, aunque el dato ya
+esté disponible desde Fase 1.
+
+**Sin cuenta de diferencias/redondeo**: como Mews solo cierra un Bill
+cuando sus pagos suman exactamente el total, y el cuadre de Gross de
+Fase 1 ya garantiza que ese total coincide con Odoo, no hace falta
+absorber ninguna diferencia. Si una factura concreta no cuadra exacto,
+es una anomalía real — **bloquea el asiento de ese día entero**, no se
+procesa parcialmente ni se esconde en una cuenta de ajuste.
+
+CONFIG necesario:
+```
+FASE4_JOURNAL_ID       <diario del asiento de conciliación>
+FASE4_CUENTA_430       <cuenta de Clientes, a conciliar>
+FASE4_BILLS_EXCLUIR    <opcional, patrones de Bill a ignorar, separados por |>
+
+# Una cuenta puente por cada código de pago del Closed report (SAN,
+# PDQ, CAS, PLD, WEB, AMR...), normalmente las mismas 579012/438100
+# que ya usa Fase 2, pero indexadas por el código corto, no por el
+# texto largo de Accounting category:
+FASE4_CUENTA_SAN       ...
+FASE4_CUENTA_PDQ       ...
+FASE4_CUENTA_CAS       ...
+FASE4_CUENTA_PLD       ...
+FASE4_CUENTA_WEB       ...
+FASE4_CUENTA_AMR       ...
+```
+
+Si un código de pago no tiene `FASE4_CUENTA_<CODE>`, o una factura no
+está en `FACTURAS`/confirmada en Odoo, se bloquea el asiento de ese
+día completo, con el detalle exacto de qué falta.
+
+**Excepción a propósito**: si el total de pagos de un bill neta a cero
+(ej. un cobro fallido + repetido por otro canal, como RPHF000055/56 —
+el mismo patrón que "SOLO PAGOS" que ya detecta Fase 1), ese bill se
+excluye entero — no hay nada real que conciliar y no debería bloquear
+el día. Se excluye tanto del lado de las cuentas puente como del de
+clientes, para que el asiento siga cuadrando.
+
+Idempotencia: `ref = MEWS-COB4/<fecha>`, igual que Fase 2 con su
+propio prefijo.
+
+Menú → "✅ Saldar facturas (Fase 4)".
+
 ## Fixes aplicados respecto al repo viejo
 
 - `jsonResponse()` estaba usada en 4 sitios y no definida en ningún
@@ -294,13 +345,15 @@ Menú → "💶 Cargar cobros de Mews (Fase 2)".
   en otros días. Ahora se combinan los dos al parsear.
 - Se detectó un caso real de error operativo: bills con líneas de
   `Payment` pero SIN ninguna línea `Revenue` (ej. un reembolso
-  registrado sin la factura/abono correspondiente). Estos nunca
-  llegan a FACTURAS porque no hay nada que facturar, así que antes
-  pasaban completamente desapercibidos. Ahora se avisan como filas
-  `⚠️` en `HUECOS_NUMERACION` (se preservan entre recálculos, a
-  diferencia de los huecos normales que sí se recalculan cada vez).
-  Respeta `BILL_TYPE_EXCLUIR` y no avisa de "Payment Bill" (PB), que
-  por diseño son solo-pago y no es un error.
+  registrado sin la factura/abono correspondiente). Al principio solo
+  se avisaba en `HUECOS_NUMERACION`. Ahora, si sus pagos netean a
+  CERO (el caso típico: cobro fallido + repetido por otro canal), se
+  crea un documento a 0€ en Odoo con una línea por cada movimiento de
+  pago real, todas contra `CUENTA_REDONDEO_ID` — así la numeración no
+  deja hueco y las dos patas del error quedan visibles en Odoo, sin
+  ningún efecto contable neto real. Solo se sigue avisando (sin crear
+  nada) cuando el total NO neteaba a cero — eso sí sigue siendo un
+  problema real sin resolver automáticamente.
 - **El bug de "company crossover" al crear clientes**: causado por
   `property_account_position_id` (y otros campos "dependientes de
   compañía" en Odoo) no tener nunca un contexto de compañía explícito
