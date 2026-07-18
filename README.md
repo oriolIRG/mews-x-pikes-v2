@@ -395,3 +395,14 @@ Menú → "✅ Saldar facturas (Fase 4)".
   rechaza esa fecha de raíz al crear el asiento. Ahora se pasa por
   `formatFechaOdoo()` (la misma función que ya usaba Fase 1 para esto),
   que normaliza bien tanto si llega texto como si llega un `Date`.
+- El asiento de Fase 4 salía descuadrado ("El asiento no está
+  balanceado") por dos fallos de signo relacionados: (1) las líneas
+  por código de pago siempre se ponían en el Debe, sin mirar si el
+  neto de ese código ese día era en realidad un reembolso (debería ir
+  al Haber); (2) el criterio de rectificativa estaba copiado de Fase 1
+  sin ajustar el signo — en las líneas `Payment` (a diferencia de las
+  `Revenue`), una rectificativa suma en POSITIVO, no en negativo
+  (confirmado con el ejemplo real RPHF000054: Revenue -295,3€, Payment
+  +295,3€). Con los dos corregidos, el cuadre es exacto matemáticamente
+  para cualquier mezcla de cobros y reembolsos ese día, no solo para
+  el caso sin reembolsos.

@@ -201,7 +201,11 @@ function saldarFacturasDelDia(cfg, uid, fecha, pagosDelDia) {
 
     facturasAConciliar.push({
       bill, invoiceId: parseInt(f.invoiceId), invoiceName: f.invoiceName,
-      partnerId: odoo[0].partner_id[0], importe: pagado, esRectificativa: totalPagado < 0,
+      // Ojo con el signo: en las líneas Payment (a diferencia de las
+      // Revenue que usa Fase 1), una rectificativa suma en POSITIVO,
+      // no en negativo — lo confirmamos con el ejemplo real RPHF000054
+      // (Revenue -295,3€, Payment +295,3€, signos opuestos).
+      partnerId: odoo[0].partner_id[0], importe: pagado, esRectificativa: totalPagado > 0,
     });
   }
 
@@ -209,11 +213,18 @@ function saldarFacturasDelDia(cfg, uid, fecha, pagosDelDia) {
     throw new Error('Facturas con problema (día bloqueado): ' + billsProblema.join(' | '));
   }
 
-  // 3. Construir el asiento: débito por código (agrupado), crédito por factura
+  // 3. Construir el asiento: por código (agrupado) y por factura
   const lineas = [];
   for (const [code, importe] of Object.entries(porCodigo)) {
     const cuentaId = parseInt(cfg[`FASE4_CUENTA_${code}`]);
-    lineas.push({ account_id: cuentaId, name: `Saldar ${code} — ${fecha}`, debit: Math.round(Math.abs(importe) * 100) / 100, credit: 0 });
+    const importeAbs = Math.round(Math.abs(importe) * 100) / 100;
+    // Igual que con las facturas: negativo = cobro neto (Debe),
+    // positivo = reembolso neto (Haber) — no siempre es Debe.
+    if (importe < 0) {
+      lineas.push({ account_id: cuentaId, name: `Saldar ${code} — ${fecha}`, debit: importeAbs, credit: 0 });
+    } else {
+      lineas.push({ account_id: cuentaId, name: `Saldar ${code} — ${fecha} (reembolso)`, debit: 0, credit: importeAbs });
+    }
   }
   for (const f of facturasAConciliar) {
     if (!f.esRectificativa) {
