@@ -387,3 +387,11 @@ Menú → "✅ Saldar facturas (Fase 4)".
   perdía justo la parte con la línea de código real que falló. Quitado
   el corte, tanto ahí como en los mensajes de error de conciliación de
   Fase 4 (estaban a 80 caracteres).
+- Fase 4 leía `fecha_cierre` de `PAGOS_CLOSED` con `String(celda)`
+  directamente. Si Sheets auto-convirtió esa celda a tipo Fecha (pasa
+  solo con guardar un texto con pinta de fecha ISO), Apps Script la
+  devuelve como `Date` de JS al leerla, y `String(esa Date)` da un
+  formato tipo "Fri Jul 17 2026..." en vez de "2026-07-17" — Odoo
+  rechaza esa fecha de raíz al crear el asiento. Ahora se pasa por
+  `formatFechaOdoo()` (la misma función que ya usaba Fase 1 para esto),
+  que normaliza bien tanto si llega texto como si llega un `Date`.

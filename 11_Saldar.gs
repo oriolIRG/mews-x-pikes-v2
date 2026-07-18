@@ -58,7 +58,12 @@ function procesarSaldarFacturas() {
     const bill = String(row[H_PAGOS.indexOf('bill_mews')]).trim();
     if (excluirBills.some(p => bill.toLowerCase().includes(p.toLowerCase()))) continue;
 
-    const fecha = String(row[H_PAGOS.indexOf('fecha_cierre')]).trim();
+    // Normalizada aquí mismo, al leer — si Sheets convirtió la celda
+    // a tipo Fecha (pasa solo con guardar texto ISO), Apps Script la
+    // devuelve como Date de JS, no como el texto original. Sin esto,
+    // acaba llegando a Odoo como "Fri Jul 17 2026..." en vez de
+    // "2026-07-17", y Odoo lo rechaza de raíz al crear el asiento.
+    const fecha = formatFechaOdoo(row[H_PAGOS.indexOf('fecha_cierre')]);
     if (!porFecha[fecha]) porFecha[fecha] = [];
     porFecha[fecha].push({ rowNum: i + 1, bill, code: String(row[H_PAGOS.indexOf('code')]).trim(), amount: parseFloat(row[H_PAGOS.indexOf('amount')]) });
   }
