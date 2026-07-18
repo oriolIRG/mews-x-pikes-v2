@@ -381,3 +381,9 @@ Menú → "✅ Saldar facturas (Fase 4)".
   normal) se comprueban como su propia secuencia independiente — se
   siguen detectando huecos, solo que sin mezclarse con la numeración
   correlativa normal de esa serie.
+- `odooExec()` cortaba el mensaje de error de Odoo a 400 caracteres
+  antes de lanzarlo — en un error normal no se nota, pero en un
+  traceback largo (como el de un fallo real al crear un asiento) se
+  perdía justo la parte con la línea de código real que falló. Quitado
+  el corte, tanto ahí como en los mensajes de error de conciliación de
+  Fase 4 (estaban a 80 caracteres).

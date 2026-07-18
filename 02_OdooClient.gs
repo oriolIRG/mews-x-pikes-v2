@@ -81,7 +81,7 @@ function odooExec(cfg, uid, model, method, args, kwargs) {
   if (text.includes('faultCode') || text.includes('<fault>')) {
     const allStrings = text.match(/<string>([\s\S]*?)<\/string>/g) || [];
     let errMsg = allStrings.length > 0
-      ? allStrings[allStrings.length - 1].replace(/<\/?string>/g, '').substring(0, 400)
+      ? allStrings[allStrings.length - 1].replace(/<\/?string>/g, '')
       : 'Error desconocido';
     throw new Error('Odoo error: ' + errMsg);
   }

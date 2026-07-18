@@ -313,15 +313,15 @@ function conciliarFacturasFase4(cfg, uid, entryId, facturas, cta430) {
           const check = odooExec(cfg, uid, 'account.move.line', 'search_read',
             [[['id', '=', lineaFactura[0].id], ['reconciled', '=', true]]], { fields: ['id'], limit: 1 });
           if (!(check && check.length > 0)) {
-            errores.push(`${f.invoiceName} (reconcile falló de verdad: ${eReconcile.message.substring(0, 80)})`);
+            errores.push(`${f.invoiceName} (reconcile falló de verdad: ${eReconcile.message})`);
           }
           // si check sí encuentra reconciled=true, error cosmético, no se añade a errores
         } else {
-          errores.push(`${f.invoiceName} (${eReconcile.message.substring(0, 80)})`);
+          errores.push(`${f.invoiceName} (${eReconcile.message})`);
         }
       }
     } catch (e) {
-      errores.push(`${f.invoiceName} (${e.message.substring(0, 80)})`);
+      errores.push(`${f.invoiceName} (${e.message})`);
     }
   }
 
