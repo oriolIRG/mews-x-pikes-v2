@@ -203,6 +203,46 @@ CUENTA_REDONDEO_ID     <id de la cuenta contable para diferencias de redondeo>
 MARGEN_REDONDEO        <margen en euros, ej. 0.05>
 ```
 
+## Fase 2 — Cobros (nuevo)
+
+Procesa el "Payment report" de Mews y crea **un asiento contable diario**
+por cada JSON, agrupado por `Accounting category` — NO toca cliente ni
+factura para nada, es puramente el registro de caja del día.
+
+CONFIG necesario:
+```
+FASE2_JOURNAL_ID       <id del diario único donde se crean los asientos>
+
+# 3 claves por cada categoría de Mews que uses, ej.:
+COBRO_CUENTA_CASH_RECEPTION            <cuenta dedicada>
+COBRO_CONTRAPARTIDA_CASH_RECEPTION     <cuenta de contrapartida>
+COBRO_ETIQUETA_CASH_RECEPTION          <texto descriptivo del apunte>
+
+COBRO_CUENTA_CARD_RECEPTION            ...
+COBRO_CONTRAPARTIDA_CARD_RECEPTION     ...
+COBRO_ETIQUETA_CARD_RECEPTION          ...
+
+# (igual para AMEX_RECEPTION, BANK_TRANSFER_SANTANDER, CARD_PAYLANDS,
+#  CARD_PIKES_WEB, y cualquier otra categoría nueva que aparezca)
+```
+
+Cómo se llega al nombre `<CATEGORIA>`: el texto de `Accounting category`
+en mayúsculas, con espacios/guiones convertidos a `_`. Ej.
+`"CASH - RECEPTION"` → `CASH_RECEPTION`.
+
+**Cobros y reembolsos van en líneas separadas, sin netear** — un
+reembolso usa la misma cuenta dedicada de su categoría, pero en el
+Haber (y su contrapartida en el Debe), como línea aparte.
+
+Si aparece una categoría de Mews sin sus 3 claves en CONFIG, el
+proceso para con un error claro listando qué falta — no se salta en
+silencio ni se inventa una cuenta.
+
+Idempotencia: cada asiento lleva `ref = MEWS-COB/<fecha>`; si ya
+existe uno con esa referencia, no se duplica.
+
+Menú → "💶 Cargar cobros de Mews (Fase 2)".
+
 ## Fixes aplicados respecto al repo viejo
 
 - `jsonResponse()` estaba usada en 4 sitios y no definida en ningún

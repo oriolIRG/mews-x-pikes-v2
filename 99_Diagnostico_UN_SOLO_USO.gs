@@ -170,3 +170,29 @@ function testPartner5630ConContexto() {
   Logger.log(msg);
   SpreadsheetApp.getUi().alert(msg);
 }
+
+// Busca el ID real, en TU Odoo actual, de una lista de cuentas por su
+// código — para no reutilizar IDs de una CONFIG vieja que podrían ser
+// de otra base de datos.
+function testBuscarCuentasPorCodigo() {
+  const cfg = getConfig();
+  const uid = getOdooUid(cfg);
+
+  const codigos = ['579006', '438100', '570003', '579012', '579010', '579007', '579011'];
+
+  const res = odooExec(cfg, uid, 'account.account', 'search_read',
+    [[['code', 'in', codigos]]],
+    { fields: ['id', 'code', 'name'] }
+  );
+
+  let msg = 'Cuentas encontradas:\n\n';
+  for (const c of codigos) {
+    const encontrada = res.find(r => r.code === c);
+    msg += encontrada
+      ? `${c} → id ${encontrada.id} (${encontrada.name})\n`
+      : `${c} → ❌ NO ENCONTRADA\n`;
+  }
+
+  Logger.log(msg);
+  SpreadsheetApp.getUi().alert(msg);
+}
