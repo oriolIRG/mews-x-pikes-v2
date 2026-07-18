@@ -147,13 +147,19 @@ function extraerPagosParaFase4(items) {
   }
 
   // Dedup: no reinsertar la misma línea si este JSON ya se procesó
-  // antes (bill + code + amount + fecha, como huella).
+  // antes. OJO: se cuenta por OCURRENCIAS, no solo presencia — dos
+  // pagos distintos pueden tener el mismo bill+código+importe+fecha
+  // (ej. dos cobros de tarjeta por la misma cantidad), y no son
+  // duplicados entre sí, solo lo son si YA había esa misma cantidad
+  // de ocurrencias guardada de antes.
   const existentes = wsPagos.getDataRange().getValues();
-  const huellas = new Set();
+  const huellaCountExistente = {};
   for (let i = 1; i < existentes.length; i++) {
-    huellas.add(`${existentes[i][0]}|||${existentes[i][1]}|||${existentes[i][2]}|||${existentes[i][3]}`);
+    const h = `${existentes[i][0]}|||${existentes[i][1]}|||${existentes[i][2]}|||${existentes[i][3]}`;
+    huellaCountExistente[h] = (huellaCountExistente[h] || 0) + 1;
   }
 
+  const huellaCountEstaTanda = {};
   const nuevas = [];
   for (const item of items) {
     if (item['Type'] !== 'Payment') continue;
@@ -165,8 +171,14 @@ function extraerPagosParaFase4(items) {
     const fecha = String(item['Closed'] || '').split('T')[0];
 
     const huella = `${bill}|||${code}|||${amount}|||${fecha}`;
-    if (huellas.has(huella)) continue;
-    huellas.add(huella);
+    const vistosEnEstaTanda = huellaCountEstaTanda[huella] || 0;
+    huellaCountEstaTanda[huella] = vistosEnEstaTanda + 1;
+
+    // Esta es la aparición número (vistosEnEstaTanda+1) de esta huella
+    // en esta tanda. Solo se salta si YA había al menos esa cantidad
+    // guardada — si no, es una línea nueva de verdad, aunque se
+    // parezca a otra ya guardada.
+    if (vistosEnEstaTanda < (huellaCountExistente[huella] || 0)) continue;
 
     nuevas.push([bill, code, amount, fecha, 'PENDIENTE', '']);
   }

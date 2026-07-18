@@ -343,7 +343,14 @@ Menú → "✅ Saldar facturas (Fase 4)".
   como segunda fuente de NIF). No cambiaba nada en el JSON de prueba
   concreto (ambos campos vacíos ahí), pero sí podía perder NIFs reales
   en otros días. Ahora se combinan los dos al parsear.
-- Se detectó un caso real de error operativo: bills con líneas de
+- `extraerPagosParaFase4()` deduplicaba por presencia
+  (bill+código+importe+fecha), no por ocurrencias — dos pagos reales
+  y distintos con exactamente los mismos valores (ej. dos cobros de
+  tarjeta por la misma cantidad, mismo bill, mismo día) se confundían
+  con un duplicado de reprocesado, y el segundo se perdía en silencio.
+  Confirmado con un caso real: faltaban exactos 68,09€ en una factura
+  con dos pagos PDQ idénticos. Ahora se cuenta cuántas veces aparece
+  cada combinación, no solo si existe.
   `Payment` pero SIN ninguna línea `Revenue` (ej. un reembolso
   registrado sin la factura/abono correspondiente). Al principio solo
   se avisaba en `HUECOS_NUMERACION`. Ahora, si sus pagos netean a
