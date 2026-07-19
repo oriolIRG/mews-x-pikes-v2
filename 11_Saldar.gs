@@ -125,6 +125,29 @@ function saldarFacturasDelDia(cfg, uid, fecha, pagosDelDia) {
     return { creado: false, mensaje: `Ya existe un asiento para ${fecha} (id ${existente[0].id}), no se duplica.` };
   }
 
+  // -1. Códigos a diferir a una fase futura (CONFIG, ej. "INV" para
+  // propiedades donde ese código no siempre significa un cobro real
+  // — a veces es "facturado a agencia, aún sin pagar", y a veces es
+  // "reserva directa consumiendo un anticipo ya cobrado en Fase 2",
+  // que necesita cruzar contra saldo existente, no un cobro nuevo).
+  // Se excluyen del todo aquí, marcados aparte, sin bloquear el día.
+  const codigosDiferir = (cfg['FASE4_CODIGOS_DIFERIR'] || '').split('|').map(s => s.trim()).filter(Boolean);
+  const pagosSinDiferir = [];
+  for (const p of pagosDelDia) {
+    if (codigosDiferir.includes(p.code)) {
+      actualizarFila(wsPagos, p.rowNum, H_PAGOS, {
+        estado: 'PENDIENTE_FASE5',
+        notas: `Código "${p.code}" diferido (FASE4_CODIGOS_DIFERIR) — pendiente de proceso aparte.`
+      });
+    } else {
+      pagosSinDiferir.push(p);
+    }
+  }
+
+  if (pagosSinDiferir.length === 0) {
+    return { creado: false, mensaje: `Todos los pagos de ${fecha} eran de códigos diferidos (${codigosDiferir.join(', ')}) — nada que conciliar hoy.` };
+  }
+
   // 0. Bills "solo pagos" cuyo total neta a cero (ej. un cobro
   // fallido + repetido por otro canal, como RPHF000055/56 que ya
   // detectamos en Fase 1) — no hay nada real que conciliar, así que
@@ -134,7 +157,7 @@ function saldarFacturasDelDia(cfg, uid, fecha, pagosDelDia) {
   // el lado de la factura, el lado de las cuentas puente quedaría
   // descuadrado por ese importe).
   const totalPorBillTodos = {};
-  for (const p of pagosDelDia) {
+  for (const p of pagosSinDiferir) {
     totalPorBillTodos[p.bill] = (totalPorBillTodos[p.bill] || 0) + p.amount;
   }
   const billsSinMovimiento = new Set(
@@ -142,11 +165,11 @@ function saldarFacturasDelDia(cfg, uid, fecha, pagosDelDia) {
       .filter(([, total]) => Math.abs(total) < 0.01)
       .map(([bill]) => bill)
   );
-  const pagosRelevantes = pagosDelDia.filter(p => !billsSinMovimiento.has(p.bill));
+  const pagosRelevantes = pagosSinDiferir.filter(p => !billsSinMovimiento.has(p.bill));
 
   // Los que se quedan fuera se marcan igualmente, para no volver a
   // revisarlos cada vez que se ejecute esto.
-  for (const p of pagosDelDia) {
+  for (const p of pagosSinDiferir) {
     if (billsSinMovimiento.has(p.bill)) {
       actualizarFila(wsPagos, p.rowNum, H_PAGOS, { estado: 'SIN_MOVIMIENTO', notas: 'Pagos de este bill suman 0 — nada que conciliar.' });
     }

@@ -28,7 +28,7 @@
 
 const UMBRAL_CREACION_CLIENTE_DEFECTO = 3000;
 
-function resolverPartner(cfg, uid, agencia, nif, ownerNombre, ownerNif, fallbackId, importeFactura) {
+function resolverPartner(cfg, uid, agencia, nif, ownerNombre, ownerNif, fallbackId, importeFactura, nombrePreferido) {
   if (nif) {
     const agenciaId = buscarEnAgencias(nif);
     if (agenciaId) return { partnerId: agenciaId, origen: 'AGENCIA' };
@@ -51,9 +51,14 @@ function resolverPartner(cfg, uid, agencia, nif, ownerNombre, ownerNif, fallback
 
   const cifEfectivo = nif || ownerNifEfectivo || '';
   const datosCache = cifEfectivo ? buscarEnCompanyCache(cifEfectivo) : null;
+  // Prioridad del nombre: caché de empresa > "Associated profile" de
+  // Mews (el nombre real de la agencia/empresa, cuando lo hay — ej.
+  // "On the Beach Beds Ltd") > el nombre del huésped si es pasaporte >
+  // el genérico "Empresa <CIF>" como último recurso.
   const nombreEfectivo = (datosCache && datosCache.nombre)
     ? datosCache.nombre
-    : (esPasaporte ? ownerNombre.trim() : (cifEfectivo ? 'Empresa ' + cifEfectivo : 'Cliente MEWS'));
+    : (nombrePreferido ? nombrePreferido.trim() : '') ||
+      (esPasaporte ? ownerNombre.trim() : (cifEfectivo ? 'Empresa ' + cifEfectivo : 'Cliente MEWS'));
 
   if (cifEfectivo) {
     const cached = getCachedPartner(cifEfectivo);
@@ -79,7 +84,18 @@ function resolverPartner(cfg, uid, agencia, nif, ownerNombre, ownerNif, fallback
     const umbral = parseFloat(cfg['UMBRAL_CREACION_CLIENTE']) || UMBRAL_CREACION_CLIENTE_DEFECTO;
     const importe = Math.abs(parseFloat(importeFactura) || 0);
 
-    if (importe <= umbral) {
+    // UMBRAL_SOLO_SIN_NIF (CONFIG, opcional): si está activo, el
+    // umbral deja de aplicar cuando hay un NIF/CIF REAL de Mews (no
+    // uno sacado de pasaporte) — típico de propiedades con mucho peso
+    // de agencias/touroperadores, donde el NIF suele ser el de la
+    // agencia (Associated tax ID), no el del huésped, y quieres esa
+    // agencia dada de alta desde la primera factura, sin esperar a
+    // que una reserva suelta supere el umbral. Por defecto (sin esta
+    // clave en CONFIG) el comportamiento no cambia.
+    const umbralSoloSinNif = String(cfg['UMBRAL_SOLO_SIN_NIF'] || '').trim().toLowerCase() === 'true';
+    const saltarUmbral = umbralSoloSinNif && !esPasaporte;
+
+    if (!saltarUmbral && importe <= umbral) {
       // Por debajo del umbral: no se crea cliente nuevo, va a Varios.
       return {
         partnerId: parseInt(fallbackId),

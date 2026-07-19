@@ -471,3 +471,61 @@ Odoo a confirmar". Tampoco bloquea físicamente que se salte el orden
 de las fases (los botones no se deshabilitan según el estado) —
 solo informa con el semáforo. Si con el uso real se ve que hace falta
 más guía o bloqueo, es una mejora para después, no para hoy.
+
+## Novedades para propiedades con peso de agencias/touroperadores
+
+Pensado para propiedades donde muchas reservas llegan a través de
+agencias (On the Beach, Jet2holidays, WebBeds...), confirmado con
+datos reales de una segunda propiedad del grupo:
+
+- **`associated_profile`**: nueva columna en `FACTURAS` (al final, no
+  rompe nada de lo existente). Captura el campo `Associated profile`
+  de Mews — el nombre real de la agencia (ej. "On the Beach Beds
+  Ltd"), cuando `Associated tax ID` es el NIF de una agencia en vez
+  del huésped. Se usa como nombre preferido al crear el cliente en
+  Odoo, en vez del genérico "Empresa <CIF>". Si usas el sistema con
+  una hoja ya creada, añade esta columna al final de `FACTURAS`.
+
+- **`UMBRAL_SOLO_SIN_NIF`** (CONFIG, opcional, `true`/`false`): por
+  defecto el umbral de creación de cliente aplica siempre que haga
+  falta crear uno nuevo, tenga NIF o no. Si lo pones a `true`, el
+  umbral deja de aplicar cuando hay un NIF/CIF REAL de Mews (no uno
+  sacado de pasaporte) — el cliente se crea siempre que haya NIF real,
+  sin importar el importe. Pensado para cuando el NIF suele ser el de
+  una agencia con la que hay relación recurrente, no algo puntual que
+  deba esperar a superar un importe.
+
+## Códigos de pago a diferir (ej. INV) — pendiente de Fase 5
+
+Para propiedades donde un código de pago (ej. `INV`) no siempre
+significa un cobro real — a veces es "facturado a agencia, aún sin
+pagar", y otras veces (reservas directas, sin agencia asociada) es
+"se está consumiendo un anticipo ya cobrado en Fase 2" — Fase 4 no
+intenta adivinar cuál es cuál. Se excluyen del todo con:
+
+```
+FASE4_CODIGOS_DIFERIR    INV
+```
+
+Los pagos con esos códigos quedan marcados en `PAGOS_CLOSED` como
+`PENDIENTE_FASE5` (con nota), sin bloquear el resto del día. El
+consumo de anticipos contra la 438100 (o la cuenta que corresponda)
+es una pieza nueva de verdad — cruzar la factura contra un saldo
+YA EXISTENTE de Fase 2, no contra un cobro nuevo — pensada como su
+propia fase futura, no un parche dentro de Fase 4.
+
+## Procesar Reservations desde Drive (para webhooks standalone propios)
+
+Si en vez del `doPost` único del proyecto (que procesa Reservations
+al vuelo) usas tu propio webhook standalone que guarda el JSON de
+Reservations en Drive, `05_Reservas.gs` ahora también sabe leer esos
+archivos pendientes y volcarlos a `RESERVAS` — reutiliza la misma
+`upsertReservas()` de siempre, no duplica lógica de parseo.
+
+Detecta los archivos por nombre (busca "RESERVATIONS" en mayúsculas
+en el nombre del archivo) dentro de `FOLDER_ID_INBOX` — la misma
+carpeta que usan Closed/Payment, no hace falta una carpeta aparte.
+
+Menú → "🗺️ Cargar reservas de Mews" (o el botón equivalente del panel
+web). Conviene procesarlas **antes** de cargar facturas, para que el
+localizador de la OTA esté disponible en cuanto se creen.

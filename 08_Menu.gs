@@ -11,6 +11,7 @@ function onOpen() {
   const ui = SpreadsheetApp.getUi();
 
   ui.createMenu('🏨 Mews → Odoo')
+    .addItem('🗺️ Cargar reservas de Mews', 'procesarJsonsDeDriveReservas')
     .addItem('1️⃣ Cargar facturas nuevas de Mews', 'procesarJsonsDeDrive')
     .addItem('2️⃣ Enviar facturas a Odoo', 'importarFacturas')
     .addSeparator()

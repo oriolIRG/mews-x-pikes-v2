@@ -35,6 +35,12 @@ function panelEstado() {
     estado.jsonsFacturasPendientes = pendientes ? pendientes.length : 0;
   } catch (e) { estado.jsonsFacturasPendientes = null; estado.errorFacturasDrive = e.message; }
 
+  // Fase 1: JSONs de Reservations pendientes en Drive
+  try {
+    const pendientesReservas = listarJsonsPendientesReservas();
+    estado.jsonsReservasPendientes = pendientesReservas ? pendientesReservas.length : 0;
+  } catch (e) { estado.jsonsReservasPendientes = null; }
+
   // Fase 1: estado de FACTURAS
   const wsFact = ss.getSheetByName(TAB.FACTURAS);
   let facturasPendientes = 0, facturasCreadas = 0, facturasError = 0;
@@ -86,6 +92,18 @@ function panelEstado() {
 }
 
 // ── Fase 1 ───────────────────────────────────────────────────────
+function panelCargarReservas() {
+  try {
+    const pendientes = listarJsonsPendientesReservas();
+    if (pendientes === null) return { ok: false, error: 'Falta FOLDER_ID_INBOX en CONFIG.' };
+    if (pendientes.length === 0) return { ok: true, mensaje: 'No había ningún JSON de Reservations pendiente.', procesados: 0 };
+    const r = procesarJsonsDeDriveReservasCore(pendientes);
+    return Object.assign({ ok: true }, r);
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 function panelCargarFacturas() {
   try {
     const pendientes = listarJsonsPendientesFacturas();

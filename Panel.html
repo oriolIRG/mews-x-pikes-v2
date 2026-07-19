@@ -179,9 +179,11 @@
     <h2>1️⃣ Facturas</h2>
     <div id="estado-fase1">Cargando estado…</div>
     <div class="acciones">
+      <button class="accion secundario" onclick="ejecutar('panelCargarReservas', 'r-fase1r', this)">🗺️ Cargar reservas</button>
       <button class="accion" onclick="ejecutar('panelCargarFacturas', 'r-fase1a', this)">📂 Cargar facturas nuevas</button>
       <button class="accion" onclick="ejecutar('panelImportarFacturas', 'r-fase1b', this)">📤 Enviar facturas a Odoo</button>
     </div>
+    <div id="r-fase1r" class="resultado"></div>
     <div id="r-fase1a" class="resultado"></div>
     <div id="r-fase1b" class="resultado"></div>
   </div>
@@ -233,6 +235,8 @@
     function pintarEstado(e) {
       // Fase 1
       const f1 = [];
+      f1.push(linea(e.jsonsReservasPendientes > 0 ? 'aviso' : 'ok', e.jsonsReservasPendientes,
+        e.jsonsReservasPendientes === null ? 'No se pudo comprobar Drive (revisa CONFIG)' : 'JSON(s) de Reservations pendiente(s) en Drive'));
       f1.push(linea(e.jsonsFacturasPendientes > 0 ? 'aviso' : 'ok', e.jsonsFacturasPendientes,
         e.jsonsFacturasPendientes === null ? 'No se pudo comprobar Drive (revisa CONFIG)' : 'JSON(s) de Closed pendiente(s) en Drive'));
       f1.push(linea(e.facturasPendientes > 0 ? 'aviso' : 'neutro', e.facturasPendientes, 'factura(s) pendiente(s) de enviar a Odoo'));

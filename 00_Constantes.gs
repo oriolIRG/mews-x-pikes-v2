@@ -27,7 +27,8 @@ const H_FACT = [
   'reservation_number', 'localizador_ota', 'agencia',
   'cliente_nif', 'cliente_nombre', 'partner_odoo_id',
   'num_lineas', 'importe_bruto', 'iva_rate',
-  'continuidad', 'estado', 'odoo_invoice_id', 'fecha_procesado', 'notas'
+  'continuidad', 'estado', 'odoo_invoice_id', 'fecha_procesado', 'notas',
+  'associated_profile'
 ];
 
 const H_LIN = [

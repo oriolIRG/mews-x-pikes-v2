@@ -74,6 +74,7 @@ function parsearClosed(data) {
     // el segundo campo).
     const clienteNif = String(primeraLinea['Associated tax ID'] || primeraLinea['Owner tax ID'] || '').trim();
     const clienteNombre = String(primeraLinea['Owner'] || '').trim();
+    const associatedProfile = String(primeraLinea['Associated profile'] || '').trim();
     const vatRate = String(primeraLinea['VAT rate']);
     const reservationNum = String(primeraLinea['Reservation number'] || '').trim();
     const estado = esPB ? 'SKIP_PB' : 'PENDIENTE';
@@ -85,7 +86,8 @@ function parsearClosed(data) {
       reservationNum, localizador, agencia,
       clienteNif, clienteNombre, '',
       lineas.length, importeTotal.toFixed(2), vatRate,
-      '', estado, '', '', esPB ? 'Payment Bill — suma 0, no se importa a Odoo' : ''
+      '', estado, '', '', esPB ? 'Payment Bill — suma 0, no se importa a Odoo' : '',
+      associatedProfile
     ]);
 
     // Agrupar líneas por (código de Mews, tipo de IVA). Importante:
@@ -293,6 +295,7 @@ function crearDocumentosAjuste555(paraCrear, cfg) {
     const primeraLinea = lineasPago[0];
     const clienteNif = String(primeraLinea['Associated tax ID'] || primeraLinea['Owner tax ID'] || '').trim();
     const clienteNombre = String(primeraLinea['Owner'] || '').trim();
+    const associatedProfile = String(primeraLinea['Associated profile'] || '').trim();
     const reservationNum = String(primeraLinea['Reservation number'] || '').trim();
     const { localizador, agencia } = buscarLocalizador(reservationNum);
 
@@ -302,7 +305,8 @@ function crearDocumentosAjuste555(paraCrear, cfg) {
       clienteNif, clienteNombre, '',
       lineasPago.length, '0.00', '',
       '', 'PENDIENTE', '', '',
-      'Documento de ajuste a 0€ — cobro corregido por otro canal, sin efecto neto (ver líneas)'
+      'Documento de ajuste a 0€ — cobro corregido por otro canal, sin efecto neto (ver líneas)',
+      associatedProfile
     ]);
 
     lineasPago.forEach((l, i) => {
@@ -465,7 +469,7 @@ function importarFacturasCore() {
 
         const resolucion = resolverPartner(cfg, uid, '', clienteNif,
           String(row[H_FACT.indexOf('cliente_nombre')] || '').trim(), '', cfg.partner_varios_id,
-          importeTotal);
+          importeTotal, String(row[H_FACT.indexOf('associated_profile')] || '').trim());
         const partnerId = resolucion.partnerId;
 
         const journalId = mappings.series[serie];
