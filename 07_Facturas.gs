@@ -13,16 +13,6 @@
  */
 
 // ── 1. Parsear un Closed report ya cargado en memoria ─────────────
-// Extrae el CIF del texto de agencia cuando viene como "Nombre (CIF)"
-// — confirmado con datos reales del campo "Travel agency" de
-// Reservations, ej. "Jet2holidays Limited (GB911468335)". Si no hay
-// paréntesis (ej. "Booking.com", "Ibiza Rocks Direct"), no hay CIF
-// que sacar y devuelve ''.
-function extraerCifDeAgencia(agenciaTexto) {
-  const m = String(agenciaTexto || '').match(/\(([^)]+)\)\s*$/);
-  return m ? m[1].trim() : '';
-}
-
 function parsearClosed(data) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const wsFact = ss.getSheetByName(TAB.FACTURAS);
@@ -82,26 +72,22 @@ function parsearClosed(data) {
     // respaldo si el primero viene vacío (se perdía en la reescritura
     // anterior — Odoo se quedaba sin NIF aunque Mews sí lo tuviera en
     // el segundo campo).
-    let clienteNif = String(primeraLinea['Associated tax ID'] || primeraLinea['Owner tax ID'] || '').trim();
+    //
+    // A propósito NO se rellena con el CIF de la agencia de la
+    // reserva (RESERVAS → agencia) cuando esto viene vacío — que un
+    // bill en concreto no tenga Associated tax ID puede ser correcto
+    // aunque la reserva entera sea de una agencia (ej. la Ecotasa la
+    // paga el huésped directamente, no la agencia, aunque la estancia
+    // sí se facture a Jet2holidays). El vacío del Closed es la fuente
+    // de verdad para "quién paga ESTE bill", no la reserva en general.
+    const clienteNif = String(primeraLinea['Associated tax ID'] || primeraLinea['Owner tax ID'] || '').trim();
     const clienteNombre = String(primeraLinea['Owner'] || '').trim();
-    let associatedProfile = String(primeraLinea['Associated profile'] || '').trim();
+    const associatedProfile = String(primeraLinea['Associated profile'] || '').trim();
     const vatRate = String(primeraLinea['VAT rate']);
     const reservationNum = String(primeraLinea['Reservation number'] || '').trim();
     const estado = esPB ? 'SKIP_PB' : 'PENDIENTE';
     const numFactura = extraerNumeroFactura(bill);
     const { localizador, agencia } = buscarLocalizador(reservationNum);
-
-    // Respaldo: el Closed no siempre trae Associated tax ID aunque sí
-    // sea una reserva de agencia (confirmado con datos reales) — pero
-    // Reservations (vía RESERVAS → agencia) sí suele traerlo, como
-    // texto "Nombre (CIF)". Si el Closed no dio NIF, se extrae de ahí.
-    if (!clienteNif && agencia) {
-      const cifDeAgencia = extraerCifDeAgencia(agencia);
-      if (cifDeAgencia) {
-        clienteNif = cifDeAgencia;
-        if (!associatedProfile) associatedProfile = agencia.replace(/\s*\([^)]+\)\s*$/, '').trim();
-      }
-    }
 
     nuevasFacturas.push([
       bill, billOdoo, serie, numFactura, primeraLinea['Closed'] || '',
@@ -333,19 +319,11 @@ function crearDocumentosAjuste555(paraCrear, cfg) {
     const billOdoo = formatearNumeroFactura(bill, serie, cfg);
     const numFactura = extraerNumeroFactura(bill);
     const primeraLinea = lineasPago[0];
-    let clienteNif = String(primeraLinea['Associated tax ID'] || primeraLinea['Owner tax ID'] || '').trim();
+    const clienteNif = String(primeraLinea['Associated tax ID'] || primeraLinea['Owner tax ID'] || '').trim();
     const clienteNombre = String(primeraLinea['Owner'] || '').trim();
-    let associatedProfile = String(primeraLinea['Associated profile'] || '').trim();
+    const associatedProfile = String(primeraLinea['Associated profile'] || '').trim();
     const reservationNum = String(primeraLinea['Reservation number'] || '').trim();
     const { localizador, agencia } = buscarLocalizador(reservationNum);
-
-    if (!clienteNif && agencia) {
-      const cifDeAgencia = extraerCifDeAgencia(agencia);
-      if (cifDeAgencia) {
-        clienteNif = cifDeAgencia;
-        if (!associatedProfile) associatedProfile = agencia.replace(/\s*\([^)]+\)\s*$/, '').trim();
-      }
-    }
 
     nuevasFacturas.push([
       bill, billOdoo, serie, numFactura, primeraLinea['Closed'] || '',

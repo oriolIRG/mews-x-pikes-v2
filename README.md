@@ -556,17 +556,15 @@ como `<serie><separador><número>` (ej. `HIR/2086994`), ignorando el
 formato original. Sin esta clave en CONFIG (como en Pikes), el
 comportamiento no cambia — sigue tal cual venía de Mews.
 
-## Respaldo de NIF desde Reservations (agencia)
 
-Confirmado con datos reales: el Closed report no siempre trae
-`Associated tax ID` aunque sí sea una reserva de agencia (a veces sí
-lo trae, como "On the Beach", a veces no, como algunas de
-"Jet2holidays" el mismo día). El campo `Travel agency` de Reservations
-(que ya usamos para `agencia` vía `RESERVAS`) parece más fiable —
-viene como texto `"Nombre (CIF)"` cuando hay CIF real (ej.
-`"Jet2holidays Limited (GB911468335)"`), sin paréntesis cuando no
-(`Booking.com`, `Ibiza Rocks Direct`).
+## Decisión revertida: NO usar el CIF de la agencia de la reserva como respaldo
 
-Ahora, si el Closed no trae NIF, se extrae del texto de `agencia` como
-respaldo — sin CONFIG nuevo, sin afectar a Pikes (si no hay paréntesis
-que extraer, simplemente no hace nada).
+Se probó (y se revirtió) rellenar `cliente_nif` con el CIF extraído
+de `agencia` (Reservations → "Travel agency") cuando el Closed venía
+vacío. Se revirtió porque es **incorrecto**: que una reserva entera
+sea de una agencia no significa que todos sus bills se facturen a esa
+agencia — ej. la Ecotasa (`Code: ECO`) la paga el huésped directamente
+aunque la estancia se facture a Jet2holidays. El `Associated tax ID`
+vacío en un bill concreto del Closed es la fuente de verdad correcta
+para "quién paga ESTE bill" — no hay que rellenarlo desde el nivel de
+reserva.
