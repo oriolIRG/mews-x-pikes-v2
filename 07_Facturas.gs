@@ -163,13 +163,15 @@ function extraerPagosParaFase4(items) {
 
   const huellaCountEstaTanda = {};
   const nuevas = [];
+  let totalPaymentItems = 0, sinBill = 0, importeInvalido = 0, saltadasPorDedup = 0;
   for (const item of items) {
     if (item['Type'] !== 'Payment') continue;
+    totalPaymentItems++;
     const bill = String(item['Bill'] || '').trim();
-    if (!bill) continue;
+    if (!bill) { sinBill++; continue; }
     const code = String(item['Code'] || '').trim();
     const amount = parseFloat(item['Amount']);
-    if (isNaN(amount) || amount === 0) continue;
+    if (isNaN(amount) || amount === 0) { importeInvalido++; continue; }
     const fecha = String(item['Closed'] || '').split('T')[0];
 
     const huella = `${bill}|||${code}|||${amount}|||${fecha}`;
@@ -180,10 +182,16 @@ function extraerPagosParaFase4(items) {
     // en esta tanda. Solo se salta si YA había al menos esa cantidad
     // guardada — si no, es una línea nueva de verdad, aunque se
     // parezca a otra ya guardada.
-    if (vistosEnEstaTanda < (huellaCountExistente[huella] || 0)) continue;
+    if (vistosEnEstaTanda < (huellaCountExistente[huella] || 0)) { saltadasPorDedup++; continue; }
 
     nuevas.push([bill, code, amount, fecha, 'PENDIENTE', '']);
   }
+
+  Logger.log(
+    `extraerPagosParaFase4: items totales=${items.length}, Type=Payment=${totalPaymentItems}, ` +
+    `sin bill=${sinBill}, importe inválido/0=${importeInvalido}, saltadas por dedup=${saltadasPorDedup}, ` +
+    `nuevas a guardar=${nuevas.length}`
+  );
 
   if (nuevas.length > 0) {
     wsPagos.getRange(wsPagos.getLastRow() + 1, 1, nuevas.length, H_PAGOS.length).setValues(nuevas);
