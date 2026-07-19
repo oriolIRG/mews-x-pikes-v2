@@ -13,6 +13,16 @@
  */
 
 // ── 1. Parsear un Closed report ya cargado en memoria ─────────────
+// Extrae el CIF del texto de agencia cuando viene como "Nombre (CIF)"
+// — confirmado con datos reales del campo "Travel agency" de
+// Reservations, ej. "Jet2holidays Limited (GB911468335)". Si no hay
+// paréntesis (ej. "Booking.com", "Ibiza Rocks Direct"), no hay CIF
+// que sacar y devuelve ''.
+function extraerCifDeAgencia(agenciaTexto) {
+  const m = String(agenciaTexto || '').match(/\(([^)]+)\)\s*$/);
+  return m ? m[1].trim() : '';
+}
+
 function parsearClosed(data) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const wsFact = ss.getSheetByName(TAB.FACTURAS);
@@ -64,7 +74,7 @@ function parsearClosed(data) {
       Logger.log('SKIP bill sin serie: ' + bill);
       continue;
     }
-    const billOdoo = formatearNumeroFactura(bill, serie);
+    const billOdoo = formatearNumeroFactura(bill, serie, cfg);
 
     const esPB = billTypeCode === 'PB';
     const importeTotal = lineas.reduce((s, l) => s + (parseFloat(l['Amount']) || 0), 0);
@@ -72,14 +82,26 @@ function parsearClosed(data) {
     // respaldo si el primero viene vacío (se perdía en la reescritura
     // anterior — Odoo se quedaba sin NIF aunque Mews sí lo tuviera en
     // el segundo campo).
-    const clienteNif = String(primeraLinea['Associated tax ID'] || primeraLinea['Owner tax ID'] || '').trim();
+    let clienteNif = String(primeraLinea['Associated tax ID'] || primeraLinea['Owner tax ID'] || '').trim();
     const clienteNombre = String(primeraLinea['Owner'] || '').trim();
-    const associatedProfile = String(primeraLinea['Associated profile'] || '').trim();
+    let associatedProfile = String(primeraLinea['Associated profile'] || '').trim();
     const vatRate = String(primeraLinea['VAT rate']);
     const reservationNum = String(primeraLinea['Reservation number'] || '').trim();
     const estado = esPB ? 'SKIP_PB' : 'PENDIENTE';
     const numFactura = extraerNumeroFactura(bill);
     const { localizador, agencia } = buscarLocalizador(reservationNum);
+
+    // Respaldo: el Closed no siempre trae Associated tax ID aunque sí
+    // sea una reserva de agencia (confirmado con datos reales) — pero
+    // Reservations (vía RESERVAS → agencia) sí suele traerlo, como
+    // texto "Nombre (CIF)". Si el Closed no dio NIF, se extrae de ahí.
+    if (!clienteNif && agencia) {
+      const cifDeAgencia = extraerCifDeAgencia(agencia);
+      if (cifDeAgencia) {
+        clienteNif = cifDeAgencia;
+        if (!associatedProfile) associatedProfile = agencia.replace(/\s*\([^)]+\)\s*$/, '').trim();
+      }
+    }
 
     nuevasFacturas.push([
       bill, billOdoo, serie, numFactura, primeraLinea['Closed'] || '',
@@ -89,6 +111,7 @@ function parsearClosed(data) {
       '', estado, '', '', esPB ? 'Payment Bill — suma 0, no se importa a Odoo' : '',
       associatedProfile
     ]);
+
 
     // Agrupar líneas por (código de Mews, tipo de IVA). Importante:
     // agrupar SOLO por código perdería la separación entre tipos de
@@ -154,10 +177,19 @@ function extraerPagosParaFase4(items) {
   // (ej. dos cobros de tarjeta por la misma cantidad), y no son
   // duplicados entre sí, solo lo son si YA había esa misma cantidad
   // de ocurrencias guardada de antes.
+  //
+  // La fecha se normaliza con formatFechaOdoo() al leerla de vuelta:
+  // si Sheets convirtió esa celda a tipo Fecha (pasa solo con guardar
+  // texto ISO), Apps Script la devuelve como Date de JS, no como el
+  // texto original — sin normalizar, la comparación nunca coincide y
+  // TODO se reinserta como si fuera nuevo cada vez que se reprocesa
+  // el mismo archivo. Mismo bug que ya arreglamos en Fase 4, aplicado
+  // aquí también.
   const existentes = wsPagos.getDataRange().getValues();
   const huellaCountExistente = {};
   for (let i = 1; i < existentes.length; i++) {
-    const h = `${existentes[i][0]}|||${existentes[i][1]}|||${existentes[i][2]}|||${existentes[i][3]}`;
+    const fechaExistente = formatFechaOdoo(existentes[i][3]);
+    const h = `${existentes[i][0]}|||${existentes[i][1]}|||${existentes[i][2]}|||${fechaExistente}`;
     huellaCountExistente[h] = (huellaCountExistente[h] || 0) + 1;
   }
 
@@ -298,14 +330,22 @@ function crearDocumentosAjuste555(paraCrear, cfg) {
     if (yaRegistradas.has(bill)) continue;
 
     const serie = billTypeCode;
-    const billOdoo = formatearNumeroFactura(bill, serie);
+    const billOdoo = formatearNumeroFactura(bill, serie, cfg);
     const numFactura = extraerNumeroFactura(bill);
     const primeraLinea = lineasPago[0];
-    const clienteNif = String(primeraLinea['Associated tax ID'] || primeraLinea['Owner tax ID'] || '').trim();
+    let clienteNif = String(primeraLinea['Associated tax ID'] || primeraLinea['Owner tax ID'] || '').trim();
     const clienteNombre = String(primeraLinea['Owner'] || '').trim();
-    const associatedProfile = String(primeraLinea['Associated profile'] || '').trim();
+    let associatedProfile = String(primeraLinea['Associated profile'] || '').trim();
     const reservationNum = String(primeraLinea['Reservation number'] || '').trim();
     const { localizador, agencia } = buscarLocalizador(reservationNum);
+
+    if (!clienteNif && agencia) {
+      const cifDeAgencia = extraerCifDeAgencia(agencia);
+      if (cifDeAgencia) {
+        clienteNif = cifDeAgencia;
+        if (!associatedProfile) associatedProfile = agencia.replace(/\s*\([^)]+\)\s*$/, '').trim();
+      }
+    }
 
     nuevasFacturas.push([
       bill, billOdoo, serie, numFactura, primeraLinea['Closed'] || '',
@@ -626,15 +666,23 @@ function extraerNumeroFactura(bill) {
   return m ? parseInt(m[0]) : 0;
 }
 
-// NOTA 2026: para facturas normales esto deja el nombre tal cual viene
-// de Mews, CON ESPACIO (ej. "PHF 2000866"), porque el regex de abajo
-// exige letras y número pegados y aquí van separados. Para abonos
-// (ej. "RPHF Credit Notes RPHF000054") sí engancha y da "RPHF/000054".
-// Es una inconsistencia real, pero decidido a propósito: para 2026 se
-// sigue como está (ya viene así en producción), se revisa en 2027.
-function formatearNumeroFactura(bill, serieResuelta) {
+// NOTA 2026: para Pikes, esto deja el nombre tal cual viene de Mews,
+// CON ESPACIO cuando así venía (ej. "PHF 2000866"), porque el regex
+// de abajo exige letras y número pegados y ahí van separados. Es una
+// inconsistencia real (decidida a propósito para Pikes en 2026, se
+// revisa en 2027) — pero otras propiedades SÍ quieren un separador
+// siempre, consistente, sin depender de cómo venga el texto de Mews.
+// Con SEPARADOR_NUM_FACTURA en CONFIG (ej. "/"), se fuerza siempre
+// serie+separador+número, ignorando el formato original.
+function formatearNumeroFactura(bill, serieResuelta, cfg) {
   const s = String(bill || '').trim();
   if (s.startsWith('PAYMENT BILL')) return 'PB/' + parseInt(s.replace('PAYMENT BILL', '').trim());
+
+  const separador = cfg && cfg['SEPARADOR_NUM_FACTURA'];
+  if (separador && serieResuelta) {
+    const digitos = s.match(/\d+$/);
+    if (digitos) return `${serieResuelta}${separador}${digitos[0]}`;
+  }
 
   // Si el texto del Bill no encaja con la serie resuelta (ej.
   // "Cancellations 0000053" resuelta como PHC vía Bill type code),

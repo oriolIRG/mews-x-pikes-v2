@@ -529,3 +529,44 @@ carpeta que usan Closed/Payment, no hace falta una carpeta aparte.
 Menú → "🗺️ Cargar reservas de Mews" (o el botón equivalente del panel
 web). Conviene procesarlas **antes** de cargar facturas, para que el
 localizador de la OTA esté disponible en cuanto se creen.
+
+- `extraerPagosParaFase4()` tenía el mismo bug de fecha que ya
+  arreglamos en Fase 4: al leer `fecha_cierre` de vuelta de
+  `PAGOS_CLOSED` para comprobar duplicados, si Sheets había
+  convertido esa celda a tipo Fecha, la comparación de texto nunca
+  coincidía — así que CADA vez que se reprocesaba el mismo archivo,
+  todas sus líneas de pago se volvían a insertar como si fueran
+  nuevas. Ahora se normaliza con `formatFechaOdoo()` al leer, igual
+  que en Fase 4.
+
+## Separador entre serie y número (opcional, por propiedad)
+
+Mews no es consistente en el formato del `Bill` incluso dentro de la
+misma propiedad — a veces viene pegado (`HIR2086994`, se convierte
+solo a `HIR/2086994`) y a veces con espacio (`HIR 2086997`, se queda
+tal cual, sin barra). Para propiedades donde quieres el separador
+SIEMPRE, sin depender de cómo venga el texto de Mews:
+
+```
+SEPARADOR_NUM_FACTURA    /
+```
+
+Con esto puesto, el nombre de la factura en Odoo siempre se construye
+como `<serie><separador><número>` (ej. `HIR/2086994`), ignorando el
+formato original. Sin esta clave en CONFIG (como en Pikes), el
+comportamiento no cambia — sigue tal cual venía de Mews.
+
+## Respaldo de NIF desde Reservations (agencia)
+
+Confirmado con datos reales: el Closed report no siempre trae
+`Associated tax ID` aunque sí sea una reserva de agencia (a veces sí
+lo trae, como "On the Beach", a veces no, como algunas de
+"Jet2holidays" el mismo día). El campo `Travel agency` de Reservations
+(que ya usamos para `agencia` vía `RESERVAS`) parece más fiable —
+viene como texto `"Nombre (CIF)"` cuando hay CIF real (ej.
+`"Jet2holidays Limited (GB911468335)"`), sin paréntesis cuando no
+(`Booking.com`, `Ibiza Rocks Direct`).
+
+Ahora, si el Closed no trae NIF, se extrae del texto de `agencia` como
+respaldo — sin CONFIG nuevo, sin afectar a Pikes (si no hay paréntesis
+que extraer, simplemente no hace nada).
