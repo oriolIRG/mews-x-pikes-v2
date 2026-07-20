@@ -78,15 +78,18 @@ function panelEstado() {
 
   // Fase 4: pagos PENDIENTE en PAGOS_CLOSED
   const wsPagos = ss.getSheetByName(TAB.PAGOS);
-  let pagosPendientes = 0;
+  let pagosPendientes = 0, pagosFase5Pendientes = 0;
   if (wsPagos && wsPagos.getLastRow() > 1) {
     const data = wsPagos.getDataRange().getValues();
     const colEstado = H_PAGOS.indexOf('estado');
     for (let i = 1; i < data.length; i++) {
-      if (String(data[i][colEstado]).trim() === 'PENDIENTE') pagosPendientes++;
+      const est = String(data[i][colEstado]).trim();
+      if (est === 'PENDIENTE') pagosPendientes++;
+      else if (est === 'PENDIENTE_FASE5') pagosFase5Pendientes++;
     }
   }
   estado.pagosPendientes = pagosPendientes;
+  estado.pagosFase5Pendientes = pagosFase5Pendientes;
 
   return estado;
 }
@@ -156,7 +159,7 @@ function panelCargarCobros() {
   }
 }
 
-// ── Fase 4 ───────────────────────────────────────────────────────
+// ── Fase 4 / Fase 5 ─────────────────────────────────────────────
 function panelSaldarFacturas() {
   try {
     const porFecha = agruparPagosPendientesPorFecha();
@@ -164,6 +167,35 @@ function panelSaldarFacturas() {
     const fechas = Object.keys(porFecha).sort();
     if (fechas.length === 0) return { ok: true, mensaje: 'No hay pagos con estado PENDIENTE.', resumen: [] };
     const resumen = procesarSaldarFacturasCore(porFecha, fechas);
+    return { ok: true, resumen };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+function panelConsumirAnticipos() {
+  try {
+    const candidatos = listarPagosFase5Pendientes();
+    if (candidatos.length === 0) return { ok: true, mensaje: 'No hay pagos INV pendientes de Fase 5.', resumen: [] };
+
+    const porFecha = {};
+    for (const p of candidatos) {
+      if (!porFecha[p.fecha]) porFecha[p.fecha] = [];
+      porFecha[p.fecha].push(p);
+    }
+    const fechas = Object.keys(porFecha).sort();
+
+    const cfg = getConfig();
+    const uid = getOdooUid(cfg);
+    const resumen = [];
+    for (const fecha of fechas) {
+      try {
+        const r = consumirAnticiposDelDia(cfg, uid, fecha, porFecha[fecha]);
+        resumen.push(`${fecha}: ${r.mensaje}`);
+      } catch (e) {
+        resumen.push(`${fecha}: ❌ ${e.message}`);
+      }
+    }
     return { ok: true, resumen };
   } catch (e) {
     return { ok: false, error: e.message };

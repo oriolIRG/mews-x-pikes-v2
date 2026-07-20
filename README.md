@@ -568,3 +568,51 @@ aunque la estancia se facture a Jet2holidays. El `Associated tax ID`
 vacío en un bill concreto del Closed es la fuente de verdad correcta
 para "quién paga ESTE bill" — no hay que rellenarlo desde el nivel de
 reserva.
+
+## Fase 5 — Consumo de anticipos (solo Ibiza Rocks Direct, nuevo)
+
+Mismo circuito contable que Fase 4 (Debe cuenta puente, Haber 430,
+conciliar la factura) — la diferencia es que aquí no es dinero nuevo,
+es consumir un anticipo ya cobrado antes (vía Fase 2, código
+`ANTICIPOMEWS`) contra el saldo de la cuenta. Mews no vincula qué
+anticipo concreto corresponde a qué factura — se concilia directo
+contra el saldo, sin buscar coincidencia por cliente ni reserva.
+
+Solo actúa sobre los pagos `INV` de bills **sin agencia** (`cliente_nif`
+vacío en FACTURAS) — reservas directas de Ibiza Rocks Direct. Los
+`INV` de bills **con** agencia se dejan tal cual en `PENDIENTE_FASE5`
+— siguen significando "facturado a la agencia, aún sin pagar de
+verdad", no hay que tocarlos aquí.
+
+Puede ser consumo total o parcial de lo pendiente de la factura (Mews
+mete en INV "lo que quede" tras otros pagos, no siempre coincide con
+el total completo).
+
+CONFIG necesario (nuevo):
+```
+FASE5_CUENTA_ANTICIPO   <cuenta puente 438 contra la que se consume>
+```
+Reutiliza `FASE4_CUENTA_430`, `FASE4_JOURNAL_ID` y `ODOO_COMPANY_ID`
+— no hace falta configurarlos de nuevo.
+
+**Importante — orden de ejecución**: Fase 4 del mismo día tiene que
+correr ANTES que Fase 5, porque Fase 5 comprueba el importe pendiente
+(`amount_residual`) de la factura DESPUÉS de lo que Fase 4 ya haya
+conciliado. Si Fase 5 va primero, el residual todavía incluye pagos
+que Fase 4 no ha aplicado todavía.
+
+Idempotencia: `ref = MEWS-COB5/<fecha>`, mismo criterio que Fase 2/4.
+
+Menú → "🏦 Consumir anticipos (Fase 5)".
+
+## Corrección en Fase 5: criterio de "Ibiza Rocks Direct"
+
+El criterio real para Fase 5 NO es "bill sin agencia" (`cliente_nif`
+vacío) — eso también capturaría otros casos sin relación (ej.
+Ecotasas sueltas con `Associated profile` vacío). El criterio correcto
+es: la columna `agencia` de FACTURAS (viene de RESERVAS/Reservations)
+coincide exactamente con la agencia directa configurada. Nueva clave:
+
+```
+FASE5_NOMBRE_AGENCIA_DIRECTA   Ibiza Rocks Direct
+```

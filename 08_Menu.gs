@@ -17,6 +17,7 @@ function onOpen() {
     .addSeparator()
     .addItem('💶 Cargar cobros de Mews (Fase 2)', 'procesarJsonsDeDriveCobros')
     .addItem('✅ Saldar facturas (Fase 4)', 'procesarSaldarFacturas')
+    .addItem('🏦 Consumir anticipos (Fase 5)', 'procesarConsumoAnticipos')
     .addSeparator()
     .addItem('🔍 Comprobar numeración', 'verificarContinuidad')
     .addItem('⚖️ Repasar cuadre Gross (facturas antiguas)', 'verificarCuadreConOdoo')

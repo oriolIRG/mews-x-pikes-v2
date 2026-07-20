@@ -220,6 +220,16 @@
     <div id="r-fase4" class="resultado"></div>
   </div>
 
+  <!-- FASE 5 -->
+  <div class="tarjeta">
+    <h2>🏦 Consumir anticipos (Fase 5)</h2>
+    <div id="estado-fase5">Cargando estado…</div>
+    <div class="acciones">
+      <button class="accion secundario" onclick="ejecutar('panelConsumirAnticipos', 'r-fase5', this)">🏦 Consumir anticipos</button>
+    </div>
+    <div id="r-fase5" class="resultado"></div>
+  </div>
+
   <script>
     function cargarEstado() {
       document.querySelectorAll('[id^="estado-"]').forEach(el => el.textContent = 'Cargando estado…');
@@ -259,6 +269,11 @@
       const f4 = [];
       f4.push(linea(e.pagosPendientes > 0 ? 'aviso' : 'ok', e.pagosPendientes, 'pago(s) pendiente(s) de conciliar'));
       document.getElementById('estado-fase4').innerHTML = f4.join('');
+
+      // Fase 5
+      const f5 = [];
+      f5.push(linea(e.pagosFase5Pendientes > 0 ? 'aviso' : 'ok', e.pagosFase5Pendientes, 'pago(s) INV pendiente(s) de revisar (agencia o Ibiza Rocks Direct)'));
+      document.getElementById('estado-fase5').innerHTML = f5.join('');
     }
 
     function linea(tipo, numero, texto) {
