@@ -19,6 +19,7 @@ const TAB = {
   RESERVAS: 'RESERVAS',
   AGENCIAS: 'AGENCIAS',
   COMPANY_CACHE: 'COMPANY_CACHE',
+  PAGOS:    'PAGOS_CLOSED',
 };
 
 const H_FACT = [
@@ -26,7 +27,8 @@ const H_FACT = [
   'reservation_number', 'localizador_ota', 'agencia',
   'cliente_nif', 'cliente_nombre', 'partner_odoo_id',
   'num_lineas', 'importe_bruto', 'iva_rate',
-  'continuidad', 'estado', 'odoo_invoice_id', 'fecha_procesado', 'notas'
+  'continuidad', 'estado', 'odoo_invoice_id', 'fecha_procesado', 'notas',
+  'associated_profile'
 ];
 
 const H_LIN = [
@@ -35,3 +37,8 @@ const H_LIN = [
 ];
 
 const H_LOG = ['timestamp', 'tipo_reporte', 'empresa', 'num_items', 'hash_md5', 'estado', 'notas'];
+
+// Líneas "Type: Payment" del Closed report — las ignora Fase 1 (que
+// solo usa Revenue), las consume Fase 4 (Saldar) más adelante, cuando
+// las facturas ya estén confirmadas en Odoo.
+const H_PAGOS = ['bill_mews', 'code', 'amount', 'fecha_cierre', 'estado', 'notas'];

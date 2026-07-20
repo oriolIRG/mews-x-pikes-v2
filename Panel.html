@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --indigo: #34308c;
+      --indigo-oscuro: #211f5c;
+      --indigo-claro: #eeedfb;
+      --verde: #15803d;
+      --verde-fondo: #f0fdf4;
+      --amarillo: #b45309;
+      --amarillo-fondo: #fffbeb;
+      --rojo: #b91c1c;
+      --rojo-fondo: #fef2f2;
+      --gris: #64748b;
+      --fondo: #f7f7fb;
+      --tarjeta: #ffffff;
+      --borde: #e7e5f5;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      background: var(--fondo);
+      margin: 0;
+      padding: 32px 28px;
+      color: #1e1b3a;
+    }
+    .cabecera {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      max-width: 760px;
+      margin: 0 auto 28px auto;
+    }
+    .marca {
+      font-family: 'Playfair Display', Georgia, serif;
+      font-weight: 700;
+      font-size: 15px;
+      letter-spacing: 0.14em;
+      color: var(--indigo);
+      text-transform: uppercase;
+      margin: 0 0 2px 0;
+    }
+    h1 {
+      font-family: 'Playfair Display', Georgia, serif;
+      font-weight: 600;
+      font-size: 26px;
+      margin: 0 0 4px 0;
+      color: #1e1b3a;
+    }
+    .subtitulo {
+      color: var(--gris);
+      font-size: 13.5px;
+    }
+    .refrescar {
+      background: white;
+      border: 1px solid var(--borde);
+      border-radius: 30px;
+      padding: 9px 16px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--indigo);
+      flex-shrink: 0;
+      margin-top: 4px;
+    }
+    .refrescar:hover { background: var(--indigo-claro); }
+
+    .tarjeta {
+      background: var(--tarjeta);
+      border: 1px solid var(--borde);
+      border-radius: 16px;
+      padding: 22px 24px;
+      margin: 0 auto 18px auto;
+      max-width: 760px;
+      box-shadow: 0 1px 2px rgba(30, 27, 58, 0.04), 0 8px 24px rgba(30, 27, 58, 0.03);
+    }
+    .tarjeta h2 {
+      font-size: 15.5px;
+      font-weight: 700;
+      margin: 0 0 14px 0;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      color: #1e1b3a;
+    }
+    .estado-linea {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13.5px;
+      color: #40385f;
+      margin-bottom: 8px;
+    }
+    .badge {
+      min-width: 20px;
+      height: 20px;
+      padding: 0 6px;
+      border-radius: 999px;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: white;
+    }
+    .badge.ok { background: var(--verde); }
+    .badge.aviso { background: var(--amarillo); }
+    .badge.mal { background: var(--rojo); }
+    .badge.neutro { background: #94a3b8; }
+
+    .acciones {
+      margin-top: 4px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    button.accion {
+      background: var(--indigo);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      padding: 11px 18px;
+      font-size: 13.5px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button.accion:hover { background: var(--indigo-oscuro); }
+    button.accion:disabled { background: #d4d2ea; cursor: not-allowed; }
+    button.accion.secundario { background: var(--indigo-claro); color: var(--indigo); }
+    button.accion.secundario:hover { background: #e0dff8; }
+
+    .resultado {
+      margin-top: 14px;
+      padding: 13px 15px;
+      border-radius: 10px;
+      font-size: 12.5px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      display: none;
+      font-family: 'SF Mono', 'Consolas', monospace;
+    }
+    .resultado.ok { background: var(--verde-fondo); border: 1px solid #bbf7d0; color: var(--verde); display: block; }
+    .resultado.error { background: var(--rojo-fondo); border: 1px solid #fecaca; color: var(--rojo); display: block; }
+    .resultado.cargando { background: #f8fafc; border: 1px solid var(--borde); color: var(--gris); display: block; font-family: 'Inter', sans-serif; }
+
+    .spinner {
+      display: inline-block;
+      width: 12px; height: 12px;
+      border: 2px solid #d4d2ea;
+      border-top-color: var(--indigo);
+      border-radius: 50%;
+      animation: girar 0.7s linear infinite;
+      margin-right: 6px;
+      vertical-align: -1px;
+    }
+    @keyframes girar { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+  <div class="cabecera">
+    <div>
+      <div class="marca">Pikes Ibiza</div>
+      <h1>Mews ⇄ Odoo</h1>
+      <div class="subtitulo">Panel de control — Facturas, Cobros y Saldar</div>
+    </div>
+    <button class="refrescar" onclick="cargarEstado()">🔄 Actualizar estado</button>
+  </div>
+
+  <!-- FASE 1 -->
+  <div class="tarjeta">
+    <h2>1️⃣ Facturas</h2>
+    <div id="estado-fase1">Cargando estado…</div>
+    <div class="acciones">
+      <button class="accion secundario" onclick="ejecutar('panelCargarReservas', 'r-fase1r', this)">🗺️ Cargar reservas</button>
+      <button class="accion" onclick="ejecutar('panelCargarFacturas', 'r-fase1a', this)">📂 Cargar facturas nuevas</button>
+      <button class="accion" onclick="ejecutar('panelImportarFacturas', 'r-fase1b', this)">📤 Enviar facturas a Odoo</button>
+    </div>
+    <div id="r-fase1r" class="resultado"></div>
+    <div id="r-fase1a" class="resultado"></div>
+    <div id="r-fase1b" class="resultado"></div>
+  </div>
+
+  <!-- CUADRE GROSS -->
+  <div class="tarjeta">
+    <h2>⚖️ Cuadre Gross</h2>
+    <div id="estado-cuadre">Cargando estado…</div>
+    <div class="acciones">
+      <button class="accion secundario" onclick="ejecutar('panelComprobarCuadre', 'r-cuadre1', this)">🔍 Repasar cuadre</button>
+      <button class="accion secundario" onclick="ejecutar('panelCorregirRedondeos', 'r-cuadre2', this)">🧮 Corregir redondeos pequeños</button>
+    </div>
+    <div id="r-cuadre1" class="resultado"></div>
+    <div id="r-cuadre2" class="resultado"></div>
+  </div>
+
+  <!-- FASE 2 -->
+  <div class="tarjeta">
+    <h2>💶 Cobros (Fase 2)</h2>
+    <div id="estado-fase2">Cargando estado…</div>
+    <div class="acciones">
+      <button class="accion" onclick="ejecutar('panelCargarCobros', 'r-fase2', this)">💶 Cargar cobros de Mews</button>
+    </div>
+    <div id="r-fase2" class="resultado"></div>
+  </div>
+
+  <!-- FASE 4 -->
+  <div class="tarjeta">
+    <h2>✅ Saldar facturas (Fase 4)</h2>
+    <div id="estado-fase4">Cargando estado…</div>
+    <div class="acciones">
+      <button class="accion" onclick="ejecutar('panelSaldarFacturas', 'r-fase4', this)">✅ Saldar facturas</button>
+    </div>
+    <div id="r-fase4" class="resultado"></div>
+  </div>
+
+  <!-- FASE 5 -->
+  <div class="tarjeta">
+    <h2>🏦 Consumir anticipos (Fase 5)</h2>
+    <div id="estado-fase5">Cargando estado…</div>
+    <div class="acciones">
+      <button class="accion secundario" onclick="ejecutar('panelConsumirAnticipos', 'r-fase5', this)">🏦 Consumir anticipos</button>
+    </div>
+    <div id="r-fase5" class="resultado"></div>
+  </div>
+
+  <script>
+    function cargarEstado() {
+      document.querySelectorAll('[id^="estado-"]').forEach(el => el.textContent = 'Cargando estado…');
+      google.script.run.withSuccessHandler(pintarEstado).withFailureHandler(mostrarErrorEstado).panelEstado();
+    }
+
+    function mostrarErrorEstado(err) {
+      document.querySelectorAll('[id^="estado-"]').forEach(el => {
+        el.innerHTML = '<div class="estado-linea"><span class="badge mal">!</span>No se pudo leer el estado: ' + escapeHtml(err.message || err) + '</div>';
+      });
+    }
+
+    function pintarEstado(e) {
+      // Fase 1
+      const f1 = [];
+      f1.push(linea(e.jsonsReservasPendientes > 0 ? 'aviso' : 'ok', e.jsonsReservasPendientes,
+        e.jsonsReservasPendientes === null ? 'No se pudo comprobar Drive (revisa CONFIG)' : 'JSON(s) de Reservations pendiente(s) en Drive'));
+      f1.push(linea(e.jsonsFacturasPendientes > 0 ? 'aviso' : 'ok', e.jsonsFacturasPendientes,
+        e.jsonsFacturasPendientes === null ? 'No se pudo comprobar Drive (revisa CONFIG)' : 'JSON(s) de Closed pendiente(s) en Drive'));
+      f1.push(linea(e.facturasPendientes > 0 ? 'aviso' : 'neutro', e.facturasPendientes, 'factura(s) pendiente(s) de enviar a Odoo'));
+      f1.push(linea('ok', e.facturasCreadas, 'factura(s) ya creada(s) en Odoo'));
+      if (e.facturasError > 0) f1.push(linea('mal', e.facturasError, 'factura(s) con error — revisa la columna notas'));
+      document.getElementById('estado-fase1').innerHTML = f1.join('');
+
+      // Cuadre
+      const fc = [];
+      fc.push(linea(e.discrepanciasPendientes > 0 ? 'aviso' : 'ok', e.discrepanciasPendientes, 'discrepancia(s) de Gross pendiente(s) de revisar/corregir'));
+      document.getElementById('estado-cuadre').innerHTML = fc.join('');
+
+      // Fase 2
+      const f2 = [];
+      f2.push(linea(e.jsonsCobrosPendientes > 0 ? 'aviso' : 'ok', e.jsonsCobrosPendientes,
+        e.jsonsCobrosPendientes === null ? 'No se pudo comprobar Drive (revisa CONFIG)' : 'Payment report(s) pendiente(s) en Drive'));
+      document.getElementById('estado-fase2').innerHTML = f2.join('');
+
+      // Fase 4
+      const f4 = [];
+      f4.push(linea(e.pagosPendientes > 0 ? 'aviso' : 'ok', e.pagosPendientes, 'pago(s) pendiente(s) de conciliar'));
+      document.getElementById('estado-fase4').innerHTML = f4.join('');
+
+      // Fase 5
+      const f5 = [];
+      f5.push(linea(e.pagosFase5Pendientes > 0 ? 'aviso' : 'ok', e.pagosFase5Pendientes, 'pago(s) INV pendiente(s) de revisar (agencia o Ibiza Rocks Direct)'));
+      document.getElementById('estado-fase5').innerHTML = f5.join('');
+    }
+
+    function linea(tipo, numero, texto) {
+      const n = (numero === null || numero === undefined) ? '?' : numero;
+      return '<div class="estado-linea"><span class="badge ' + tipo + '">' + n + '</span>' + escapeHtml(texto) + '</div>';
+    }
+
+    function ejecutar(nombreFuncion, idResultado, boton) {
+      const el = document.getElementById(idResultado);
+      el.className = 'resultado cargando';
+      el.innerHTML = '<span class="spinner"></span>Procesando… puede tardar un rato si hay varios archivos.';
+      boton.disabled = true;
+
+      google.script.run
+        .withSuccessHandler(function (r) {
+          boton.disabled = false;
+          pintarResultado(el, r);
+          cargarEstado();
+        })
+        .withFailureHandler(function (err) {
+          boton.disabled = false;
+          el.className = 'resultado error';
+          el.textContent = '❌ ' + (err.message || err);
+        })
+        [nombreFuncion]();
+    }
+
+    function pintarResultado(el, r) {
+      if (!r.ok) {
+        el.className = 'resultado error';
+        el.textContent = '❌ ' + r.error;
+        return;
+      }
+      el.className = 'resultado ok';
+
+      const lineas = [];
+      if (r.mensaje) lineas.push(r.mensaje);
+      if (r.procesados !== undefined) lineas.push('Archivos procesados: ' + r.procesados);
+      if (r.totalFacturas !== undefined) lineas.push('Facturas nuevas: ' + r.totalFacturas);
+      if (r.creadas !== undefined) lineas.push('Creadas en Odoo: ' + r.creadas + ' | Ya existían/saltadas: ' + r.saltadas + ' | Errores: ' + r.errores);
+      if (r.discrepanciasCuadre) lineas.push('⚖️ Discrepancias de Gross detectadas: ' + r.discrepanciasCuadre);
+      if (r.comprobadas !== undefined) lineas.push('Comprobadas: ' + r.comprobadas + ' | Discrepancias nuevas: ' + r.nuevasDiscrepancias);
+      if (r.corregidas !== undefined) lineas.push('Corregidas: ' + r.corregidas + ' | Fuera de margen: ' + r.fueraDeMargen + ' | Errores: ' + r.errores);
+      if (r.detalle) lineas.push(r.detalle.join('\n'));
+      if (r.resultados) lineas.push(r.resultados.join('\n'));
+      if (r.resumen) lineas.push(r.resumen.join('\n'));
+      if (r.errDetail && r.errDetail.length) lineas.push('Detalle de errores:\n' + r.errDetail.join('\n'));
+
+      el.textContent = lineas.join('\n');
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = String(s);
+      return div.innerHTML;
+    }
+
+    cargarEstado();
+  </script>
+</body>
+</html>

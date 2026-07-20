@@ -64,7 +64,7 @@ function parsearClosed(data) {
       Logger.log('SKIP bill sin serie: ' + bill);
       continue;
     }
-    const billOdoo = formatearNumeroFactura(bill, serie);
+    const billOdoo = formatearNumeroFactura(bill, serie, cfg);
 
     const esPB = billTypeCode === 'PB';
     const importeTotal = lineas.reduce((s, l) => s + (parseFloat(l['Amount']) || 0), 0);
@@ -72,8 +72,17 @@ function parsearClosed(data) {
     // respaldo si el primero viene vacío (se perdía en la reescritura
     // anterior — Odoo se quedaba sin NIF aunque Mews sí lo tuviera en
     // el segundo campo).
+    //
+    // A propósito NO se rellena con el CIF de la agencia de la
+    // reserva (RESERVAS → agencia) cuando esto viene vacío — que un
+    // bill en concreto no tenga Associated tax ID puede ser correcto
+    // aunque la reserva entera sea de una agencia (ej. la Ecotasa la
+    // paga el huésped directamente, no la agencia, aunque la estancia
+    // sí se facture a Jet2holidays). El vacío del Closed es la fuente
+    // de verdad para "quién paga ESTE bill", no la reserva en general.
     const clienteNif = String(primeraLinea['Associated tax ID'] || primeraLinea['Owner tax ID'] || '').trim();
     const clienteNombre = String(primeraLinea['Owner'] || '').trim();
+    const associatedProfile = String(primeraLinea['Associated profile'] || '').trim();
     const vatRate = String(primeraLinea['VAT rate']);
     const reservationNum = String(primeraLinea['Reservation number'] || '').trim();
     const estado = esPB ? 'SKIP_PB' : 'PENDIENTE';
@@ -85,8 +94,10 @@ function parsearClosed(data) {
       reservationNum, localizador, agencia,
       clienteNif, clienteNombre, '',
       lineas.length, importeTotal.toFixed(2), vatRate,
-      '', estado, '', '', esPB ? 'Payment Bill — suma 0, no se importa a Odoo' : ''
+      '', estado, '', '', esPB ? 'Payment Bill — suma 0, no se importa a Odoo' : '',
+      associatedProfile
     ]);
+
 
     // Agrupar líneas por (código de Mews, tipo de IVA). Importante:
     // agrupar SOLO por código perdería la separación entre tipos de
@@ -127,38 +138,136 @@ function parsearClosed(data) {
 
   reordenarYRecalcularContinuidad();
   avisarBillsSoloPago(items, cfg);
+  extraerPagosParaFase4(items);
 
   return { nFacturas: nuevasFacturas.length, nLineas: nuevasLineas.length };
 }
 
-// ── Detectar bills "solo con pagos" (sin ninguna línea Revenue) ────
-// Error operativo real (confirmado): un bill nunca debería tener
-// líneas de Payment sin ninguna línea de Revenue — significa que se
-// registró un cobro/reembolso sin la factura o abono correspondiente.
-// Estos bills NUNCA llegan a FACTURAS (no hay nada que facturar), así
-// que no se pueden detectar desde ahí — hay que mirarlo aquí, con el
-// JSON original en la mano, y dejar aviso en HUECOS_NUMERACION.
+// ── Extraer líneas Type: Payment para Fase 4 (Saldar) ──────────────
+// Fase 1 solo usa Type: Revenue para las facturas — estas líneas de
+// pago no se usan aquí, se guardan para cuando Fase 4 las necesite,
+// más adelante, una vez las facturas estén confirmadas en Odoo.
+function extraerPagosParaFase4(items) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let wsPagos = ss.getSheetByName(TAB.PAGOS);
+  if (!wsPagos) {
+    wsPagos = ss.insertSheet(TAB.PAGOS);
+    wsPagos.getRange(1, 1, 1, H_PAGOS.length).setValues([H_PAGOS]);
+    wsPagos.getRange(1, 1, 1, H_PAGOS.length).setFontWeight('bold');
+    wsPagos.setFrozenRows(1);
+  }
+
+  // Dedup: no reinsertar la misma línea si este JSON ya se procesó
+  // antes. OJO: se cuenta por OCURRENCIAS, no solo presencia — dos
+  // pagos distintos pueden tener el mismo bill+código+importe+fecha
+  // (ej. dos cobros de tarjeta por la misma cantidad), y no son
+  // duplicados entre sí, solo lo son si YA había esa misma cantidad
+  // de ocurrencias guardada de antes.
+  //
+  // La fecha se normaliza con formatFechaOdoo() al leerla de vuelta:
+  // si Sheets convirtió esa celda a tipo Fecha (pasa solo con guardar
+  // texto ISO), Apps Script la devuelve como Date de JS, no como el
+  // texto original — sin normalizar, la comparación nunca coincide y
+  // TODO se reinserta como si fuera nuevo cada vez que se reprocesa
+  // el mismo archivo. Mismo bug que ya arreglamos en Fase 4, aplicado
+  // aquí también.
+  const existentes = wsPagos.getDataRange().getValues();
+  const huellaCountExistente = {};
+  for (let i = 1; i < existentes.length; i++) {
+    const fechaExistente = formatFechaOdoo(existentes[i][3]);
+    const h = `${existentes[i][0]}|||${existentes[i][1]}|||${existentes[i][2]}|||${fechaExistente}`;
+    huellaCountExistente[h] = (huellaCountExistente[h] || 0) + 1;
+  }
+
+  const huellaCountEstaTanda = {};
+  const nuevas = [];
+  let totalPaymentItems = 0, sinBill = 0, importeInvalido = 0, saltadasPorDedup = 0;
+  for (const item of items) {
+    if (item['Type'] !== 'Payment') continue;
+    totalPaymentItems++;
+    const bill = String(item['Bill'] || '').trim();
+    if (!bill) { sinBill++; continue; }
+    const code = String(item['Code'] || '').trim();
+    const amount = parseFloat(item['Amount']);
+    if (isNaN(amount) || amount === 0) { importeInvalido++; continue; }
+    const fecha = String(item['Closed'] || '').split('T')[0];
+
+    const huella = `${bill}|||${code}|||${amount}|||${fecha}`;
+    const vistosEnEstaTanda = huellaCountEstaTanda[huella] || 0;
+    huellaCountEstaTanda[huella] = vistosEnEstaTanda + 1;
+
+    // Esta es la aparición número (vistosEnEstaTanda+1) de esta huella
+    // en esta tanda. Solo se salta si YA había al menos esa cantidad
+    // guardada — si no, es una línea nueva de verdad, aunque se
+    // parezca a otra ya guardada.
+    if (vistosEnEstaTanda < (huellaCountExistente[huella] || 0)) { saltadasPorDedup++; continue; }
+
+    nuevas.push([bill, code, amount, fecha, 'PENDIENTE', '']);
+  }
+
+  Logger.log(
+    `extraerPagosParaFase4: items totales=${items.length}, Type=Payment=${totalPaymentItems}, ` +
+    `sin bill=${sinBill}, importe inválido/0=${importeInvalido}, saltadas por dedup=${saltadasPorDedup}, ` +
+    `nuevas a guardar=${nuevas.length}`
+  );
+
+  if (nuevas.length > 0) {
+    wsPagos.getRange(wsPagos.getLastRow() + 1, 1, nuevas.length, H_PAGOS.length).setValues(nuevas);
+  }
+}
+
+// ── Bills "solo con pagos" (sin ninguna línea Revenue) ──────────────
+// Dos casos, distinto tratamiento:
+//  - Si sus pagos netean a CERO (ej. un cobro fallido + repetido por
+//    otro canal): se crea un documento a 0€ en Odoo, con una línea
+//    por cada movimiento de pago real, TODAS contra la cuenta 555
+//    (CUENTA_REDONDEO_ID) — así el efecto contable neto es cero, pero
+//    las dos patas del error quedan visibles y la numeración no deja
+//    un hueco. Tipo de documento por serie: si el Bill type code
+//    empieza por "R" (RPHF/RPHC), abono; si no, factura normal.
+//  - Si NO netean a cero: sigue siendo un error operativo real (dinero
+//    sin factura) — se avisa en HUECOS_NUMERACION, no se inventa nada.
 // Los "Payment Bill" (PB) y cualquier tipo en BILL_TYPE_EXCLUIR se
-// excluyen: esos ya se ignoran a propósito, no es un error.
+// excluyen de ambos casos: esos ya se ignoran a propósito.
 function avisarBillsSoloPago(items, cfg) {
   const excluidosBillType = (cfg['BILL_TYPE_EXCLUIR'] || '').split('|').map(s => s.trim()).filter(Boolean);
 
   const billsConRevenue = new Set();
   const primeraLineaPorBill = {};
+  const lineasPagoPorBill = {};
   for (const item of items) {
     const bill = String(item['Bill'] || '').trim();
     if (!bill) continue;
     if (item['Type'] === 'Revenue') billsConRevenue.add(bill);
     if (!primeraLineaPorBill[bill]) primeraLineaPorBill[bill] = item;
+    if (item['Type'] === 'Payment') {
+      if (!lineasPagoPorBill[bill]) lineasPagoPorBill[bill] = [];
+      lineasPagoPorBill[bill].push(item);
+    }
   }
 
+  const paraCrear = [];
   const sospechosos = [];
+
   for (const [bill, item] of Object.entries(primeraLineaPorBill)) {
     if (billsConRevenue.has(bill)) continue;
     const billTypeCode = String(item['Bill type code'] || '').trim();
     if (!billTypeCode || billTypeCode === 'PB' || excluidosBillType.includes(billTypeCode)) continue;
-    sospechosos.push({ bill, billTypeCode });
+
+    const lineasPago = lineasPagoPorBill[bill] || [];
+    const totalPago = lineasPago.reduce((s, l) => s + (parseFloat(l['Amount']) || 0), 0);
+
+    if (Math.abs(totalPago) < 0.01 && lineasPago.length > 0) {
+      paraCrear.push({ bill, billTypeCode, lineasPago });
+    } else {
+      sospechosos.push({ bill, billTypeCode });
+    }
   }
+
+  if (paraCrear.length > 0) {
+    crearDocumentosAjuste555(paraCrear, cfg);
+  }
+
   if (sospechosos.length === 0) return;
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -188,17 +297,94 @@ function avisarBillsSoloPago(items, cfg) {
   }
 }
 
+// Crea, para cada bill "solo pagos que suman cero", un documento a 0€
+// con una línea por movimiento de pago real, todas contra la cuenta
+// 555 — mismo circuito que una factura normal (FACTURAS/FACTURAS_LINEAS,
+// PENDIENTE, pasa por importarFacturas), solo que las líneas llevan el
+// marcador 'AJUSTE_555' en vez de un producto real.
+function crearDocumentosAjuste555(paraCrear, cfg) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const wsFact = ss.getSheetByName(TAB.FACTURAS);
+  const wsLin = ss.getSheetByName(TAB.LINEAS);
+
+  const yaRegistradas = getValoresExistentes(wsFact, 'bill_mews', H_FACT);
+
+  const nuevasFacturas = [];
+  const nuevasLineas = [];
+
+  for (const { bill, billTypeCode, lineasPago } of paraCrear) {
+    if (yaRegistradas.has(bill)) continue;
+
+    const serie = billTypeCode;
+    const billOdoo = formatearNumeroFactura(bill, serie, cfg);
+    const numFactura = extraerNumeroFactura(bill);
+    const primeraLinea = lineasPago[0];
+    const clienteNif = String(primeraLinea['Associated tax ID'] || primeraLinea['Owner tax ID'] || '').trim();
+    const clienteNombre = String(primeraLinea['Owner'] || '').trim();
+    const associatedProfile = String(primeraLinea['Associated profile'] || '').trim();
+    const reservationNum = String(primeraLinea['Reservation number'] || '').trim();
+    const { localizador, agencia } = buscarLocalizador(reservationNum);
+
+    nuevasFacturas.push([
+      bill, billOdoo, serie, numFactura, primeraLinea['Closed'] || '',
+      reservationNum, localizador, agencia,
+      clienteNif, clienteNombre, '',
+      lineasPago.length, '0.00', '',
+      '', 'PENDIENTE', '', '',
+      'Documento de ajuste a 0€ — cobro corregido por otro canal, sin efecto neto (ver líneas)',
+      associatedProfile
+    ]);
+
+    lineasPago.forEach((l, i) => {
+      const code = String(l['Code'] || '').trim();
+      const amount = parseFloat(l['Amount']) || 0;
+      nuevasLineas.push([
+        bill, i + 1, code, `Ajuste operativo — pago vía ${code}`, '',
+        amount, 0, amount,
+        'AJUSTE_555', '', serie
+      ]);
+    });
+
+    yaRegistradas.add(bill);
+  }
+
+  if (nuevasFacturas.length > 0) {
+    appendRows(wsFact, nuevasFacturas);
+    appendRows(wsLin, nuevasLineas);
+  }
+}
+
 // ── 2. Procesar todos los JSONs pendientes en Drive ────────────────
 function procesarJsonsDeDrive() {
   const ui = SpreadsheetApp.getUi();
-  const cfg = getConfig();
 
+  const pendientes = listarJsonsPendientesFacturas();
+  if (pendientes === null) { ui.alert('❌ Falta FOLDER_ID_INBOX en CONFIG.'); return; }
+  if (pendientes.length === 0) { ui.alert('📭 No hay JSONs pendientes en la carpeta inbox.'); return; }
+
+  const confirmar = ui.alert(
+    'Procesar JSONs pendientes',
+    `Se encontraron ${pendientes.length} archivo(s):\n\n` +
+    pendientes.map(f => '• ' + f.getName()).join('\n') +
+    '\n\n¿Procesar y archivar?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirmar !== ui.Button.YES) return;
+
+  const r = procesarJsonsDeDriveCore(pendientes);
+  ui.alert(
+    '✅ Proceso completado\n\n' +
+    `• Archivos procesados: ${r.procesados}\n` +
+    `• Facturas nuevas: ${r.totalFacturas}\n` +
+    `• Errores: ${r.errores}\n\n` + r.detalle.join('\n')
+  );
+}
+
+// Sin UI — la usa tanto el menú (arriba) como el panel web.
+function listarJsonsPendientesFacturas() {
+  const cfg = getConfig();
   const inboxId = cfg['FOLDER_ID_INBOX'];
-  const procesadosId = cfg['FOLDER_ID_PROCESADOS'];
-  if (!inboxId) {
-    ui.alert('❌ Falta FOLDER_ID_INBOX en CONFIG.');
-    return;
-  }
+  if (!inboxId) return null;
 
   const inbox = DriveApp.getFolderById(inboxId);
   const _esClosed = n => n.includes('CLOSED') || (n.includes('ACCOUNTING') && !n.includes('CREATED'));
@@ -214,24 +400,17 @@ function procesarJsonsDeDrive() {
     const f = iter2.next();
     if (_esClosed(f.getName().toUpperCase())) pendientes.push(f);
   }
+  return pendientes;
+}
 
-  if (pendientes.length === 0) {
-    ui.alert('📭 No hay JSONs pendientes en la carpeta inbox.');
-    return;
-  }
-
-  const confirmar = ui.alert(
-    'Procesar JSONs pendientes',
-    `Se encontraron ${pendientes.length} archivo(s):\n\n` +
-    pendientes.map(f => '• ' + f.getName()).join('\n') +
-    '\n\n¿Procesar y archivar?',
-    ui.ButtonSet.YES_NO
-  );
-  if (confirmar !== ui.Button.YES) return;
+// Sin UI — hace el trabajo real, devuelve un resumen en vez de un alert.
+function procesarJsonsDeDriveCore(pendientes) {
+  const cfg = getConfig();
+  const procesadosId = cfg['FOLDER_ID_PROCESADOS'];
+  const carpetaProcesados = procesadosId ? DriveApp.getFolderById(procesadosId) : null;
 
   let totalFacturas = 0, procesados = 0, errores = 0;
   const detalle = [];
-  const carpetaProcesados = procesadosId ? DriveApp.getFolderById(procesadosId) : null;
 
   for (const file of pendientes) {
     const nombre = file.getName();
@@ -260,30 +439,24 @@ function procesarJsonsDeDrive() {
     }
   }
 
-  ui.alert(
-    '✅ Proceso completado\n\n' +
-    `• Archivos procesados: ${procesados}\n` +
-    `• Facturas nuevas: ${totalFacturas}\n` +
-    `• Errores: ${errores}\n\n` + detalle.join('\n')
-  );
+  return { procesados, totalFacturas, errores, detalle };
 }
 
 // ── 3. Enviar facturas PENDIENTES a Odoo ───────────────────────────
-function importarFacturas() {
-  const ui = SpreadsheetApp.getUi();
-
-  try {
-    const cfg = getConfig();
-    const uid = getOdooUid(cfg);
-    const mappings = getMappings(cfg);
+// Sin UI — la usa tanto el wrapper del menú (justo debajo) como el
+// panel web. Lanza si hay un error general (CONFIG faltante, etc.);
+// los errores por factura individual quedan dentro del resultado.
+function importarFacturasCore() {
+  const cfg = getConfig();
+  const uid = getOdooUid(cfg);
+  const mappings = getMappings(cfg);
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const wsFact = ss.getSheetByName(TAB.FACTURAS);
     const wsLin = ss.getSheetByName(TAB.LINEAS);
     const data = wsFact.getDataRange().getValues();
 
     if (data.length < 2) {
-      ui.alert('No hay facturas registradas todavía.');
-      return;
+      throw new Error('No hay facturas registradas todavía.');
     }
 
     const todasLineas = cargarLineas(wsLin);
@@ -322,7 +495,7 @@ function importarFacturas() {
 
         const resolucion = resolverPartner(cfg, uid, '', clienteNif,
           String(row[H_FACT.indexOf('cliente_nombre')] || '').trim(), '', cfg.partner_varios_id,
-          importeTotal);
+          importeTotal, String(row[H_FACT.indexOf('associated_profile')] || '').trim());
         const partnerId = resolucion.partnerId;
 
         const journalId = mappings.series[serie];
@@ -335,15 +508,34 @@ function importarFacturas() {
         const lineas = todasLineas[billMews] || [];
         if (lineas.length === 0) throw new Error('Sin líneas de detalle. Vuelve a importar el Closed.');
 
-        const isRefund = importeTotal < 0;
+        // Documentos de ajuste a 0€ (bills "solo pagos que suman
+        // cero"): el importe total es 0, así que el signo no dice
+        // nada — el tipo de documento se decide por la serie (R... =
+        // abono, igual que en todo lo demás).
+        const esAjuste555 = lineas.some(l => l.odoo_product_id === 'AJUSTE_555');
+        const isRefund = esAjuste555 ? serie.startsWith('R') : importeTotal < 0;
+        const cuenta555Id = esAjuste555 ? parseInt(cfg['CUENTA_REDONDEO_ID']) : null;
+        if (esAjuste555 && !cuenta555Id) throw new Error('Falta CUENTA_REDONDEO_ID en CONFIG (necesaria para documentos de ajuste).');
 
         const invoiceLines = lineas.map(l => {
-          const productId = mappings.productos[l.mews_code] || false;
-          const taxId = mappings.vat[String(l.vat_rate)] || false;
-
           // Signo desde la perspectiva del documento en Odoo:
           // factura normal → net tal cual; abono → signo invertido.
           const netDoc = isRefund ? -l.net : l.net;
+
+          if (l.odoo_product_id === 'AJUSTE_555') {
+            // Línea de ajuste: va directa a la cuenta 555, sin
+            // producto, sin IVA, sin analítica — no es una venta real.
+            return [0, 0, {
+              account_id: cuenta555Id,
+              price_unit: Math.abs(netDoc),
+              quantity: netDoc < 0 ? -1 : 1,
+              tax_ids: [[6, 0, []]],
+              name: l.descripcion || l.mews_code,
+            }];
+          }
+
+          const productId = mappings.productos[l.mews_code] || false;
+          const taxId = mappings.vat[String(l.vat_rate)] || false;
 
           return [0, 0, {
             product_id: productId,
@@ -409,12 +601,20 @@ function importarFacturas() {
       Utilities.sleep(300);
     }
 
-    let msg = `✅ Proceso completado\n\n• Creadas en Odoo (borrador): ${creadas}\n• Ya existían/saltadas: ${saltadas}\n• Errores: ${errores}`;
-    if (discrepanciasCuadre > 0) msg += `\n• ⚖️ Discrepancias de Gross detectadas: ${discrepanciasCuadre} (ver CUADRE_GROSS)`;
-    if (errores > 0) msg += '\n\nDetalle:\n' + errDetail.slice(0, 5).join('\n');
-    if (creadas > 0) msg += '\n\n📌 Recuerda confirmar las facturas manualmente en Odoo.';
-    ui.alert(msg);
+  return { creadas, saltadas, errores, discrepanciasCuadre, errDetail };
+}
 
+// Wrapper del menú: llama a la versión Core y muestra el resultado
+// con ui.alert. El panel web llama a importarFacturasCore() directamente.
+function importarFacturas() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const r = importarFacturasCore();
+    let msg = `✅ Proceso completado\n\n• Creadas en Odoo (borrador): ${r.creadas}\n• Ya existían/saltadas: ${r.saltadas}\n• Errores: ${r.errores}`;
+    if (r.discrepanciasCuadre > 0) msg += `\n• ⚖️ Discrepancias de Gross detectadas: ${r.discrepanciasCuadre} (ver CUADRE_GROSS)`;
+    if (r.errores > 0) msg += '\n\nDetalle:\n' + r.errDetail.slice(0, 5).join('\n');
+    if (r.creadas > 0) msg += '\n\n📌 Recuerda confirmar las facturas manualmente en Odoo.';
+    ui.alert(msg);
   } catch (err) {
     ui.alert(`❌ Error general: ${err.message}`);
     Logger.log('ERROR importarFacturas: ' + err.message + '\n' + err.stack);
@@ -444,15 +644,23 @@ function extraerNumeroFactura(bill) {
   return m ? parseInt(m[0]) : 0;
 }
 
-// NOTA 2026: para facturas normales esto deja el nombre tal cual viene
-// de Mews, CON ESPACIO (ej. "PHF 2000866"), porque el regex de abajo
-// exige letras y número pegados y aquí van separados. Para abonos
-// (ej. "RPHF Credit Notes RPHF000054") sí engancha y da "RPHF/000054".
-// Es una inconsistencia real, pero decidido a propósito: para 2026 se
-// sigue como está (ya viene así en producción), se revisa en 2027.
-function formatearNumeroFactura(bill, serieResuelta) {
+// NOTA 2026: para Pikes, esto deja el nombre tal cual viene de Mews,
+// CON ESPACIO cuando así venía (ej. "PHF 2000866"), porque el regex
+// de abajo exige letras y número pegados y ahí van separados. Es una
+// inconsistencia real (decidida a propósito para Pikes en 2026, se
+// revisa en 2027) — pero otras propiedades SÍ quieren un separador
+// siempre, consistente, sin depender de cómo venga el texto de Mews.
+// Con SEPARADOR_NUM_FACTURA en CONFIG (ej. "/"), se fuerza siempre
+// serie+separador+número, ignorando el formato original.
+function formatearNumeroFactura(bill, serieResuelta, cfg) {
   const s = String(bill || '').trim();
   if (s.startsWith('PAYMENT BILL')) return 'PB/' + parseInt(s.replace('PAYMENT BILL', '').trim());
+
+  const separador = cfg && cfg['SEPARADOR_NUM_FACTURA'];
+  if (separador && serieResuelta) {
+    const digitos = s.match(/\d+$/);
+    if (digitos) return `${serieResuelta}${separador}${digitos[0]}`;
+  }
 
   // Si el texto del Bill no encaja con la serie resuelta (ej.
   // "Cancellations 0000053" resuelta como PHC vía Bill type code),
@@ -635,6 +843,18 @@ function registrarDiscrepanciaCuadre(billMews, billOdoo, invoiceId, grossMews, g
 // todo de golpe. Las nuevas ya se detectan solas al importar.
 function verificarCuadreConOdoo() {
   const ui = SpreadsheetApp.getUi();
+  const r = verificarCuadreConOdooCore();
+  ui.alert(
+    '✅ Repaso completo terminado\n\n' +
+    `• Facturas comprobadas (no detectadas antes): ${r.comprobadas}\n` +
+    `• Discrepancias nuevas encontradas: ${r.nuevasDiscrepancias}\n` +
+    `• Diferencia acumulada de las nuevas: ${r.sumaDiferencia.toFixed(2)}€\n\n` +
+    'Detalle acumulado en la pestaña CUADRE_GROSS (incluye también las detectadas automáticamente al importar).'
+  );
+}
+
+// Sin UI — la usa el wrapper de arriba y el panel web.
+function verificarCuadreConOdooCore() {
   const cfg = getConfig();
   const uid = getOdooUid(cfg);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -644,8 +864,6 @@ function verificarCuadreConOdoo() {
   let comprobadas = 0, nuevasDiscrepancias = 0;
   let sumaDiferencia = 0;
 
-  // Bills que ya están registrados en CUADRE_GROSS, para no duplicar
-  // filas si esta factura ya se detectó al vuelo durante el import.
   const wsCuadreExistente = ss.getSheetByName('CUADRE_GROSS');
   const yaRegistrados = new Set(
     wsCuadreExistente && wsCuadreExistente.getLastRow() > 1
@@ -660,7 +878,7 @@ function verificarCuadreConOdoo() {
     if (estado !== 'CREADA' || !invoiceId) continue;
 
     const billMews = row[H_FACT.indexOf('bill_mews')];
-    if (yaRegistrados.has(String(billMews))) continue; // ya detectada antes
+    if (yaRegistrados.has(String(billMews))) continue;
 
     const billOdoo = row[H_FACT.indexOf('bill_odoo')];
     const grossMews = Math.abs(parseFloat(row[H_FACT.indexOf('importe_bruto')]) || 0);
@@ -683,13 +901,7 @@ function verificarCuadreConOdoo() {
     }
   }
 
-  ui.alert(
-    '✅ Repaso completo terminado\n\n' +
-    `• Facturas comprobadas (no detectadas antes): ${comprobadas}\n` +
-    `• Discrepancias nuevas encontradas: ${nuevasDiscrepancias}\n` +
-    `• Diferencia acumulada de las nuevas: ${sumaDiferencia.toFixed(2)}€\n\n` +
-    'Detalle acumulado en la pestaña CUADRE_GROSS (incluye también las detectadas automáticamente al importar).'
-  );
+  return { comprobadas, nuevasDiscrepancias, sumaDiferencia };
 }
 
 // ── Corrección automática de redondeos pequeños ─────────────────────
@@ -700,19 +912,33 @@ function verificarCuadreConOdoo() {
 // que superen el margen NO se tocan, se quedan para revisión manual.
 function corregirRedondeosAutomaticamente() {
   const ui = SpreadsheetApp.getUi();
+  try {
+    const r = corregirRedondeosAutomaticamenteCore();
+    ui.alert(
+      '✅ Corrección de redondeos completada\n\n' +
+      `• Corregidas automáticamente (≤ ${r.margen}€): ${r.corregidas}\n` +
+      `• Fuera de margen, sin tocar (revisar a mano): ${r.fueraDeMargen}\n` +
+      `• Errores al corregir: ${r.errores}`
+    );
+  } catch (e) {
+    ui.alert('❌ ' + e.message);
+  }
+}
+
+// Sin UI — la usa el wrapper de arriba y el panel web.
+function corregirRedondeosAutomaticamenteCore() {
   const cfg = getConfig();
   const uid = getOdooUid(cfg);
   const cuentaId = parseInt(cfg['CUENTA_REDONDEO_ID']);
   const margen = parseFloat(cfg['MARGEN_REDONDEO']);
 
-  if (!cuentaId) { ui.alert('❌ Falta CUENTA_REDONDEO_ID en CONFIG.'); return; }
-  if (isNaN(margen)) { ui.alert('❌ Falta MARGEN_REDONDEO en CONFIG (ej. 0.05).'); return; }
+  if (!cuentaId) throw new Error('Falta CUENTA_REDONDEO_ID en CONFIG.');
+  if (isNaN(margen)) throw new Error('Falta MARGEN_REDONDEO en CONFIG (ej. 0.05).');
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const wsCuadre = ss.getSheetByName('CUADRE_GROSS');
   if (!wsCuadre || wsCuadre.getLastRow() < 2) {
-    ui.alert('No hay nada en CUADRE_GROSS. Ejecuta primero "Comprobar cuadre Gross".');
-    return;
+    throw new Error('No hay nada en CUADRE_GROSS. Ejecuta primero "Comprobar cuadre Gross".');
   }
 
   const data = wsCuadre.getDataRange().getValues();
@@ -740,8 +966,8 @@ function corregirRedondeosAutomaticamente() {
         invoice_line_ids: [[0, 0, {
           name: 'Ajuste de redondeo Mews ↔ Odoo',
           quantity: 1,
-          price_unit: -diferencia, // si Odoo sacó de más, se resta; si de menos, se suma
-          tax_ids: [[6, 0, []]],   // sin IVA, es un ajuste puro
+          price_unit: -diferencia,
+          tax_ids: [[6, 0, []]],
           account_id: cuentaId,
         }]]
       }], {});
@@ -755,10 +981,5 @@ function corregirRedondeosAutomaticamente() {
     }
   }
 
-  ui.alert(
-    '✅ Corrección de redondeos completada\n\n' +
-    `• Corregidas automáticamente (≤ ${margen}€): ${corregidas}\n` +
-    `• Fuera de margen, sin tocar (revisar a mano): ${fueraDeMargen}\n` +
-    `• Errores al corregir: ${errores}`
-  );
+  return { corregidas, fueraDeMargen, errores, margen };
 }

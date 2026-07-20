@@ -252,6 +252,57 @@ existe uno con esa referencia, no se duplica.
 
 Menú → "💶 Cargar cobros de Mews (Fase 2)".
 
+## Fase 4 — Saldar facturas (nuevo)
+
+Concilia cada factura contra sus pagos reales, usando las líneas
+`Type: Payment` del mismo Closed report que ya procesa Fase 1 (se
+guardan solas en la pestaña `PAGOS_CLOSED` al parsear, sin que haga
+falta ningún archivo nuevo). Solo se puede ejecutar cuando las
+facturas de esos días ya están **confirmadas** en Odoo, no en
+borrador — por eso es una fase aparte y posterior, aunque el dato ya
+esté disponible desde Fase 1.
+
+**Sin cuenta de diferencias/redondeo**: como Mews solo cierra un Bill
+cuando sus pagos suman exactamente el total, y el cuadre de Gross de
+Fase 1 ya garantiza que ese total coincide con Odoo, no hace falta
+absorber ninguna diferencia. Si una factura concreta no cuadra exacto,
+es una anomalía real — **bloquea el asiento de ese día entero**, no se
+procesa parcialmente ni se esconde en una cuenta de ajuste.
+
+CONFIG necesario:
+```
+FASE4_JOURNAL_ID       <diario del asiento de conciliación>
+FASE4_CUENTA_430       <cuenta de Clientes, a conciliar>
+FASE4_BILLS_EXCLUIR    <opcional, patrones de Bill a ignorar, separados por |>
+
+# Una cuenta puente por cada código de pago del Closed report (SAN,
+# PDQ, CAS, PLD, WEB, AMR...), normalmente las mismas 579012/438100
+# que ya usa Fase 2, pero indexadas por el código corto, no por el
+# texto largo de Accounting category:
+FASE4_CUENTA_SAN       ...
+FASE4_CUENTA_PDQ       ...
+FASE4_CUENTA_CAS       ...
+FASE4_CUENTA_PLD       ...
+FASE4_CUENTA_WEB       ...
+FASE4_CUENTA_AMR       ...
+```
+
+Si un código de pago no tiene `FASE4_CUENTA_<CODE>`, o una factura no
+está en `FACTURAS`/confirmada en Odoo, se bloquea el asiento de ese
+día completo, con el detalle exacto de qué falta.
+
+**Excepción a propósito**: si el total de pagos de un bill neta a cero
+(ej. un cobro fallido + repetido por otro canal, como RPHF000055/56 —
+el mismo patrón que "SOLO PAGOS" que ya detecta Fase 1), ese bill se
+excluye entero — no hay nada real que conciliar y no debería bloquear
+el día. Se excluye tanto del lado de las cuentas puente como del de
+clientes, para que el asiento siga cuadrando.
+
+Idempotencia: `ref = MEWS-COB4/<fecha>`, igual que Fase 2 con su
+propio prefijo.
+
+Menú → "✅ Saldar facturas (Fase 4)".
+
 ## Fixes aplicados respecto al repo viejo
 
 - `jsonResponse()` estaba usada en 4 sitios y no definida en ningún
@@ -292,15 +343,24 @@ Menú → "💶 Cargar cobros de Mews (Fase 2)".
   como segunda fuente de NIF). No cambiaba nada en el JSON de prueba
   concreto (ambos campos vacíos ahí), pero sí podía perder NIFs reales
   en otros días. Ahora se combinan los dos al parsear.
-- Se detectó un caso real de error operativo: bills con líneas de
+- `extraerPagosParaFase4()` deduplicaba por presencia
+  (bill+código+importe+fecha), no por ocurrencias — dos pagos reales
+  y distintos con exactamente los mismos valores (ej. dos cobros de
+  tarjeta por la misma cantidad, mismo bill, mismo día) se confundían
+  con un duplicado de reprocesado, y el segundo se perdía en silencio.
+  Confirmado con un caso real: faltaban exactos 68,09€ en una factura
+  con dos pagos PDQ idénticos. Ahora se cuenta cuántas veces aparece
+  cada combinación, no solo si existe.
   `Payment` pero SIN ninguna línea `Revenue` (ej. un reembolso
-  registrado sin la factura/abono correspondiente). Estos nunca
-  llegan a FACTURAS porque no hay nada que facturar, así que antes
-  pasaban completamente desapercibidos. Ahora se avisan como filas
-  `⚠️` en `HUECOS_NUMERACION` (se preservan entre recálculos, a
-  diferencia de los huecos normales que sí se recalculan cada vez).
-  Respeta `BILL_TYPE_EXCLUIR` y no avisa de "Payment Bill" (PB), que
-  por diseño son solo-pago y no es un error.
+  registrado sin la factura/abono correspondiente). Al principio solo
+  se avisaba en `HUECOS_NUMERACION`. Ahora, si sus pagos netean a
+  CERO (el caso típico: cobro fallido + repetido por otro canal), se
+  crea un documento a 0€ en Odoo con una línea por cada movimiento de
+  pago real, todas contra `CUENTA_REDONDEO_ID` — así la numeración no
+  deja hueco y las dos patas del error quedan visibles en Odoo, sin
+  ningún efecto contable neto real. Solo se sigue avisando (sin crear
+  nada) cuando el total NO neteaba a cero — eso sí sigue siendo un
+  problema real sin resolver automáticamente.
 - **El bug de "company crossover" al crear clientes**: causado por
   `property_account_position_id` (y otros campos "dependientes de
   compañía" en Odoo) no tener nunca un contexto de compañía explícito
@@ -321,3 +381,238 @@ Menú → "💶 Cargar cobros de Mews (Fase 2)".
   normal) se comprueban como su propia secuencia independiente — se
   siguen detectando huecos, solo que sin mezclarse con la numeración
   correlativa normal de esa serie.
+- `odooExec()` cortaba el mensaje de error de Odoo a 400 caracteres
+  antes de lanzarlo — en un error normal no se nota, pero en un
+  traceback largo (como el de un fallo real al crear un asiento) se
+  perdía justo la parte con la línea de código real que falló. Quitado
+  el corte, tanto ahí como en los mensajes de error de conciliación de
+  Fase 4 (estaban a 80 caracteres).
+- Fase 4 leía `fecha_cierre` de `PAGOS_CLOSED` con `String(celda)`
+  directamente. Si Sheets auto-convirtió esa celda a tipo Fecha (pasa
+  solo con guardar un texto con pinta de fecha ISO), Apps Script la
+  devuelve como `Date` de JS al leerla, y `String(esa Date)` da un
+  formato tipo "Fri Jul 17 2026..." en vez de "2026-07-17" — Odoo
+  rechaza esa fecha de raíz al crear el asiento. Ahora se pasa por
+  `formatFechaOdoo()` (la misma función que ya usaba Fase 1 para esto),
+  que normaliza bien tanto si llega texto como si llega un `Date`.
+- El asiento de Fase 4 salía descuadrado ("El asiento no está
+  balanceado") por dos fallos de signo relacionados: (1) las líneas
+  por código de pago siempre se ponían en el Debe, sin mirar si el
+  neto de ese código ese día era en realidad un reembolso (debería ir
+  al Haber); (2) el criterio de rectificativa estaba copiado de Fase 1
+  sin ajustar el signo — en las líneas `Payment` (a diferencia de las
+  `Revenue`), una rectificativa suma en POSITIVO, no en negativo
+  (confirmado con el ejemplo real RPHF000054: Revenue -295,3€, Payment
+  +295,3€). Con los dos corregidos, el cuadre es exacto matemáticamente
+  para cualquier mezcla de cobros y reembolsos ese día, no solo para
+  el caso sin reembolsos.
+
+## ⚠️ Aviso importante: posible desplazamiento de un día en fechas ya creadas
+
+`formatFechaOdoo()` usaba `.toISOString()` (siempre UTC) para las
+fechas de factura de Fase 1 y de agrupación de Fase 4. Si Sheets
+convirtió una celda de texto ISO a tipo Fecha (algo que hace solo,
+sin avisar), el `Date` resultante representa medianoche en Madrid —
+y `.toISOString()` lo pasaba a UTC, perdiendo un día (medianoche CEST
+= 22:00 del día anterior en UTC). Ya está arreglado con
+`Utilities.formatDate(..., 'Europe/Madrid', ...)`.
+
+**Esto pudo haber afectado a facturas de Fase 1 ya creadas en Odoo
+antes de este fix**, con `invoice_date` un día antes del real — vale
+la pena revisar alguna factura de las primeras pruebas y comprobar la
+fecha contra el `Closed` real del JSON, por si hace falta corregir
+alguna a mano.
+
+## Panel de control (Web App)
+
+Interfaz web propia dentro del mismo proyecto de Apps Script — no es
+código nuevo de negocio, es una capa fina (`12_PanelWeb.gs` +
+`Panel.html`) sobre las mismas funciones `*Core` que ya usa el menú.
+Pensado para gente no técnica del equipo, uso diario.
+
+### Cómo funciona
+
+- `12_PanelWeb.gs` añade `doGet(e)` (sirve el HTML) y unas funciones
+  `panelXxx()` que llaman a las mismas `*Core` de siempre y devuelven
+  objetos planos — nunca objetos de Drive/Sheets, porque
+  `google.script.run` (el puente entre el HTML y Apps Script) no
+  puede serializarlos.
+- `Panel.html` es la interfaz: un semáforo de estado por fase y un
+  botón por acción. Llama a las funciones `panelXxx()` vía
+  `google.script.run` y pinta el resultado, sin usar ningún
+  `ui.alert()` (por eso hicieron falta las versiones `*Core` de cada
+  función — `ui.alert()` revienta si no hay una hoja abierta detrás,
+  como ya vimos con el disparador automático de Huéspedes).
+
+### Desplegar
+
+Extensiones → Apps Script → pega `12_PanelWeb.gs` y crea un archivo
+HTML nuevo llamado exactamente **`Panel`** (Archivo → Nuevo → Html,
+Apps Script le añade `.html` solo) con el contenido de `Panel.html`.
+
+Implementar → Nueva implementación → Aplicación web → ejecutar como
+tú, acceso a quien vaya a usarlo (tu dominio de Google Workspace, o
+"Cualquier usuario con cuenta de Google" si hace falta). Copia la
+URL — esa es la del panel.
+
+Puedes reusar el mismo proyecto que ya tiene el webhook (`doPost`) —
+Apps Script distingue solas las peticiones por verbo HTTP (GET =
+panel, POST = webhook de Mews), así que no hay conflicto. Si
+prefieres URLs separadas para no mezclar "la URL que le doy a Mews"
+con "la URL que uso yo", crea una implementación nueva del mismo
+proyecto — cada implementación tiene su propia URL aunque compartan
+código.
+
+### Qué NO hace (a propósito, de momento)
+
+No reemplaza los pasos manuales en Odoo (confirmar facturas, revisar
+discrepancias grandes) — sigue siendo "aprieta el botón, luego ve a
+Odoo a confirmar". Tampoco bloquea físicamente que se salte el orden
+de las fases (los botones no se deshabilitan según el estado) —
+solo informa con el semáforo. Si con el uso real se ve que hace falta
+más guía o bloqueo, es una mejora para después, no para hoy.
+
+## Novedades para propiedades con peso de agencias/touroperadores
+
+Pensado para propiedades donde muchas reservas llegan a través de
+agencias (On the Beach, Jet2holidays, WebBeds...), confirmado con
+datos reales de una segunda propiedad del grupo:
+
+- **`associated_profile`**: nueva columna en `FACTURAS` (al final, no
+  rompe nada de lo existente). Captura el campo `Associated profile`
+  de Mews — el nombre real de la agencia (ej. "On the Beach Beds
+  Ltd"), cuando `Associated tax ID` es el NIF de una agencia en vez
+  del huésped. Se usa como nombre preferido al crear el cliente en
+  Odoo, en vez del genérico "Empresa <CIF>". Si usas el sistema con
+  una hoja ya creada, añade esta columna al final de `FACTURAS`.
+
+- **`UMBRAL_SOLO_SIN_NIF`** (CONFIG, opcional, `true`/`false`): por
+  defecto el umbral de creación de cliente aplica siempre que haga
+  falta crear uno nuevo, tenga NIF o no. Si lo pones a `true`, el
+  umbral deja de aplicar cuando hay un NIF/CIF REAL de Mews (no uno
+  sacado de pasaporte) — el cliente se crea siempre que haya NIF real,
+  sin importar el importe. Pensado para cuando el NIF suele ser el de
+  una agencia con la que hay relación recurrente, no algo puntual que
+  deba esperar a superar un importe.
+
+## Códigos de pago a diferir (ej. INV) — pendiente de Fase 5
+
+Para propiedades donde un código de pago (ej. `INV`) no siempre
+significa un cobro real — a veces es "facturado a agencia, aún sin
+pagar", y otras veces (reservas directas, sin agencia asociada) es
+"se está consumiendo un anticipo ya cobrado en Fase 2" — Fase 4 no
+intenta adivinar cuál es cuál. Se excluyen del todo con:
+
+```
+FASE4_CODIGOS_DIFERIR    INV
+```
+
+Los pagos con esos códigos quedan marcados en `PAGOS_CLOSED` como
+`PENDIENTE_FASE5` (con nota), sin bloquear el resto del día. El
+consumo de anticipos contra la 438100 (o la cuenta que corresponda)
+es una pieza nueva de verdad — cruzar la factura contra un saldo
+YA EXISTENTE de Fase 2, no contra un cobro nuevo — pensada como su
+propia fase futura, no un parche dentro de Fase 4.
+
+## Procesar Reservations desde Drive (para webhooks standalone propios)
+
+Si en vez del `doPost` único del proyecto (que procesa Reservations
+al vuelo) usas tu propio webhook standalone que guarda el JSON de
+Reservations en Drive, `05_Reservas.gs` ahora también sabe leer esos
+archivos pendientes y volcarlos a `RESERVAS` — reutiliza la misma
+`upsertReservas()` de siempre, no duplica lógica de parseo.
+
+Detecta los archivos por nombre (busca "RESERVATIONS" en mayúsculas
+en el nombre del archivo) dentro de `FOLDER_ID_INBOX` — la misma
+carpeta que usan Closed/Payment, no hace falta una carpeta aparte.
+
+Menú → "🗺️ Cargar reservas de Mews" (o el botón equivalente del panel
+web). Conviene procesarlas **antes** de cargar facturas, para que el
+localizador de la OTA esté disponible en cuanto se creen.
+
+- `extraerPagosParaFase4()` tenía el mismo bug de fecha que ya
+  arreglamos en Fase 4: al leer `fecha_cierre` de vuelta de
+  `PAGOS_CLOSED` para comprobar duplicados, si Sheets había
+  convertido esa celda a tipo Fecha, la comparación de texto nunca
+  coincidía — así que CADA vez que se reprocesaba el mismo archivo,
+  todas sus líneas de pago se volvían a insertar como si fueran
+  nuevas. Ahora se normaliza con `formatFechaOdoo()` al leer, igual
+  que en Fase 4.
+
+## Separador entre serie y número (opcional, por propiedad)
+
+Mews no es consistente en el formato del `Bill` incluso dentro de la
+misma propiedad — a veces viene pegado (`HIR2086994`, se convierte
+solo a `HIR/2086994`) y a veces con espacio (`HIR 2086997`, se queda
+tal cual, sin barra). Para propiedades donde quieres el separador
+SIEMPRE, sin depender de cómo venga el texto de Mews:
+
+```
+SEPARADOR_NUM_FACTURA    /
+```
+
+Con esto puesto, el nombre de la factura en Odoo siempre se construye
+como `<serie><separador><número>` (ej. `HIR/2086994`), ignorando el
+formato original. Sin esta clave en CONFIG (como en Pikes), el
+comportamiento no cambia — sigue tal cual venía de Mews.
+
+
+## Decisión revertida: NO usar el CIF de la agencia de la reserva como respaldo
+
+Se probó (y se revirtió) rellenar `cliente_nif` con el CIF extraído
+de `agencia` (Reservations → "Travel agency") cuando el Closed venía
+vacío. Se revirtió porque es **incorrecto**: que una reserva entera
+sea de una agencia no significa que todos sus bills se facturen a esa
+agencia — ej. la Ecotasa (`Code: ECO`) la paga el huésped directamente
+aunque la estancia se facture a Jet2holidays. El `Associated tax ID`
+vacío en un bill concreto del Closed es la fuente de verdad correcta
+para "quién paga ESTE bill" — no hay que rellenarlo desde el nivel de
+reserva.
+
+## Fase 5 — Consumo de anticipos (solo Ibiza Rocks Direct, nuevo)
+
+Mismo circuito contable que Fase 4 (Debe cuenta puente, Haber 430,
+conciliar la factura) — la diferencia es que aquí no es dinero nuevo,
+es consumir un anticipo ya cobrado antes (vía Fase 2, código
+`ANTICIPOMEWS`) contra el saldo de la cuenta. Mews no vincula qué
+anticipo concreto corresponde a qué factura — se concilia directo
+contra el saldo, sin buscar coincidencia por cliente ni reserva.
+
+Solo actúa sobre los pagos `INV` de bills **sin agencia** (`cliente_nif`
+vacío en FACTURAS) — reservas directas de Ibiza Rocks Direct. Los
+`INV` de bills **con** agencia se dejan tal cual en `PENDIENTE_FASE5`
+— siguen significando "facturado a la agencia, aún sin pagar de
+verdad", no hay que tocarlos aquí.
+
+Puede ser consumo total o parcial de lo pendiente de la factura (Mews
+mete en INV "lo que quede" tras otros pagos, no siempre coincide con
+el total completo).
+
+CONFIG necesario (nuevo):
+```
+FASE5_CUENTA_ANTICIPO   <cuenta puente 438 contra la que se consume>
+```
+Reutiliza `FASE4_CUENTA_430`, `FASE4_JOURNAL_ID` y `ODOO_COMPANY_ID`
+— no hace falta configurarlos de nuevo.
+
+**Importante — orden de ejecución**: Fase 4 del mismo día tiene que
+correr ANTES que Fase 5, porque Fase 5 comprueba el importe pendiente
+(`amount_residual`) de la factura DESPUÉS de lo que Fase 4 ya haya
+conciliado. Si Fase 5 va primero, el residual todavía incluye pagos
+que Fase 4 no ha aplicado todavía.
+
+Idempotencia: `ref = MEWS-COB5/<fecha>`, mismo criterio que Fase 2/4.
+
+Menú → "🏦 Consumir anticipos (Fase 5)".
+
+## Corrección en Fase 5: criterio de "Ibiza Rocks Direct"
+
+El criterio real para Fase 5 NO es "bill sin agencia" (`cliente_nif`
+vacío) — eso también capturaría otros casos sin relación (ej.
+Ecotasas sueltas con `Associated profile` vacío). El criterio correcto
+es: la columna `agencia` de FACTURAS (viene de RESERVAS/Reservations)
+coincide exactamente con la agencia directa configurada. Nueva clave:
+
+```
+FASE5_NOMBRE_AGENCIA_DIRECTA   Ibiza Rocks Direct
+```

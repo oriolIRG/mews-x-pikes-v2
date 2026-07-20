@@ -9,9 +9,16 @@ function ahora() {
 }
 
 function formatFechaOdoo(dt) {
-  if (!dt) return new Date().toISOString().split('T')[0];
+  // Europe/Madrid explícito, NUNCA .toISOString() (siempre UTC). Si
+  // Sheets convirtió una celda de texto ISO a tipo Fecha, el Date que
+  // devuelve representa medianoche en Madrid — con .toISOString() eso
+  // se convertía a UTC y se perdía un día (medianoche CEST = 22:00 del
+  // día anterior en UTC). Con formatDate() y zona explícita, se
+  // interpreta bien tanto si llega texto como si llega ese Date.
+  if (!dt) return Utilities.formatDate(new Date(), 'Europe/Madrid', 'yyyy-MM-dd');
   const d = new Date(dt);
-  return isNaN(d.getTime()) ? new Date().toISOString().split('T')[0] : d.toISOString().split('T')[0];
+  if (isNaN(d.getTime())) return Utilities.formatDate(new Date(), 'Europe/Madrid', 'yyyy-MM-dd');
+  return Utilities.formatDate(d, 'Europe/Madrid', 'yyyy-MM-dd');
 }
 
 function md5(text) {

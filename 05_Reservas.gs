@@ -6,8 +6,85 @@
  *  El enrutado (detectar que es un JSON de Reservations y llamar a
  *  upsertReservas) pasa por el doPost(e) único de 04_Webhooks.gs,
  *  no hay un endpoint propio aquí.
+ *
+ *  Para propiedades que en vez de eso usan un webhook standalone
+ *  propio que guarda el JSON en Drive (en vez de procesarlo al
+ *  vuelo), las funciones de abajo (procesarJsonsDeDriveReservas y
+ *  compañía) leen esos archivos pendientes y llaman a la misma
+ *  upsertReservas() — sin duplicar la lógica de parseo.
  * ================================================================
  */
+
+function procesarJsonsDeDriveReservas() {
+  const ui = SpreadsheetApp.getUi();
+
+  const pendientes = listarJsonsPendientesReservas();
+  if (pendientes === null) { ui.alert('❌ Falta FOLDER_ID_INBOX en CONFIG.'); return; }
+  if (pendientes.length === 0) { ui.alert('📭 No hay JSONs de Reservations pendientes en la carpeta inbox.'); return; }
+
+  const confirmar = ui.alert(
+    'Procesar Reservations pendientes',
+    `Se encontraron ${pendientes.length} archivo(s):\n\n` +
+    pendientes.map(f => '• ' + f.getName()).join('\n') +
+    '\n\n¿Procesar y archivar?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirmar !== ui.Button.YES) return;
+
+  const r = procesarJsonsDeDriveReservasCore(pendientes);
+  ui.alert(
+    '✅ Proceso completado\n\n' +
+    `• Archivos procesados: ${r.procesados}\n` +
+    `• Reservas nuevas: ${r.totalNuevas}\n` +
+    `• Reservas actualizadas: ${r.totalActualizadas}\n` +
+    `• Errores: ${r.errores}`
+  );
+}
+
+// Sin UI — la usa el wrapper de arriba y el panel web.
+function listarJsonsPendientesReservas() {
+  const cfg = getConfig();
+  const inboxId = cfg['FOLDER_ID_INBOX'];
+  if (!inboxId) return null;
+
+  const inbox = DriveApp.getFolderById(inboxId);
+  const pendientes = [];
+  const iter = inbox.getFiles();
+  while (iter.hasNext()) {
+    const f = iter.next();
+    if (f.getName().toUpperCase().includes('RESERVATIONS')) pendientes.push(f);
+  }
+  return pendientes;
+}
+
+// Sin UI — hace el trabajo real, devuelve un resumen.
+function procesarJsonsDeDriveReservasCore(pendientes) {
+  const cfg = getConfig();
+  const procesadosId = cfg['FOLDER_ID_PROCESADOS'];
+  const carpetaProcesados = procesadosId ? DriveApp.getFolderById(procesadosId) : null;
+
+  let totalNuevas = 0, totalActualizadas = 0, procesados = 0, errores = 0;
+
+  for (const file of pendientes) {
+    try {
+      const raw = file.getBlob().getDataAsString();
+      const data = JSON.parse(raw);
+      const result = upsertReservas(data);
+      totalNuevas += result.nuevas;
+      totalActualizadas += result.actualizadas;
+      registrarLog('RESERVATIONS', result.empresa, result.total, md5(raw), 'OK', `${result.nuevas} nuevas, ${result.actualizadas} actualizadas`);
+
+      if (carpetaProcesados) file.moveTo(carpetaProcesados);
+      else file.setTrashed(true);
+      procesados++;
+    } catch (err) {
+      Logger.log('ERROR procesando ' + file.getName() + ': ' + err.message);
+      errores++;
+    }
+  }
+
+  return { procesados, totalNuevas, totalActualizadas, errores };
+}
 
 function upsertReservas(data) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
