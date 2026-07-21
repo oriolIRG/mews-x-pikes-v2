@@ -102,10 +102,16 @@ function crearAsientoCobrosDelDia(data) {
     return { creado: false, mensaje: `Ya existe un asiento para ${fecha} (id ${existente[0].id}), no se duplica.` };
   }
 
-  // 1. Extraer todos los pagos de "Cash payments" y "External payments"
+  // 1. Extraer todos los pagos de CUALQUIER documento que tenga
+  // columnas "Accounting category" y "Value" — confirmado con datos
+  // reales que Mews no siempre mete todo en "Cash payments"/"External
+  // payments": en esta propiedad el dinero de tarjeta/gateway va en
+  // "Card payments" y el facturado a cuenta en "Invoice payments".
+  // Generalizar así evita depender de en qué documento concreto decida
+  // Mews poner cada tipo de pago, aquí o en otra propiedad.
   const pagos = [];
   for (const doc of data.Documents) {
-    if (doc.Name !== 'Cash payments' && doc.Name !== 'External payments') continue;
+    if (doc.Name === 'Parameters') continue;
     if (!Array.isArray(doc.Data) || doc.Data.length < 2) continue;
 
     const headers = doc.Data[0];
