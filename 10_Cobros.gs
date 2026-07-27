@@ -75,6 +75,9 @@ function procesarJsonsDeDriveCobrosCore(pendientes) {
       const resultado = crearAsientoCobrosDelDia(data);
       resultados.push(`${file.getName()}: ${resultado.mensaje}`);
 
+      const resultadoFees = crearAsientoFeesGatewayDelDia(data);
+      resultados.push(`  ↳ Fees: ${resultadoFees.mensaje}`);
+
       if (carpetaProcesados) file.moveTo(carpetaProcesados);
       else file.setTrashed(true);
     } catch (err) {
