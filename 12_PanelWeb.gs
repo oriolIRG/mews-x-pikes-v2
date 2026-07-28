@@ -5,28 +5,46 @@
  *  No hay lógica de negocio nueva aquí — todo esto llama a las
  *  mismas funciones *Core que ya usa el menú de la hoja. Este
  *  archivo solo:
- *   1. Sirve el HTML del panel (doGet).
+ *   1. Sirve el HTML del panel (doGet), con el nombre de la
+ *      propiedad inyectado desde CONFIG (NOMBRE_PROPIEDAD) — así el
+ *      mismo Panel.html sirve para Pikes e IRH sin tocar el HTML.
  *   2. Da forma "serializable" (objetos planos, nunca objetos de
  *      Drive/Sheets) a lo que necesita la interfaz, porque
  *      google.script.run no puede devolver ese tipo de objetos.
+ *
+ *  CONFIG nuevo:
+ *    NOMBRE_PROPIEDAD → texto que se muestra en la cabecera del panel
+ *                        (ej. "Pikes Ibiza", "Ibiza Rocks House")
  *
  *  DESPLIEGUE: Implementar → Nueva implementación → Aplicación web.
  *  Puede ser la misma URL que ya usas para el webhook (doPost) — Apps
  *  Script las distingue solas por el verbo HTTP (GET = panel, POST =
  *  webhook de Mews) — o una implementación aparte si prefieres URLs
  *  separadas para cada cosa.
+ *
+ *  RECORDATORIO que ya nos ha costado un buen rato hoy: guardar este
+ *  archivo NO actualiza una Web App ya publicada. Hay que ir a
+ *  Implementar → Gestionar implementaciones → editar la implementación
+ *  de tipo "Aplicación web" → Versión: Nueva versión → Implementar.
  * ================================================================
  */
 
 function doGet(e) {
-  return HtmlService.createHtmlOutputFromFile('Panel')
-    .setTitle('Mews → Odoo — Panel de control')
+  const cfg = getConfig();
+  const nombrePropiedad = cfg['NOMBRE_PROPIEDAD'] || 'Mews';
+
+  const template = HtmlService.createTemplateFromFile('Panel');
+  template.nombrePropiedad = nombrePropiedad;
+
+  return template.evaluate()
+    .setTitle(`Mews → Odoo — ${nombrePropiedad}`)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
 // ── Estado general, para pintar los semáforos del panel ────────────
 function panelEstado() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const cfg = getConfig();
   const estado = {};
 
   // Fase 1: JSONs pendientes en Drive
@@ -78,17 +96,33 @@ function panelEstado() {
 
   // Fase 4: pagos PENDIENTE en PAGOS_CLOSED
   const wsPagos = ss.getSheetByName(TAB.PAGOS);
-  let pagosPendientes = 0, pagosFase5Pendientes = 0;
+  let pagosPendientes = 0;
   if (wsPagos && wsPagos.getLastRow() > 1) {
     const data = wsPagos.getDataRange().getValues();
     const colEstado = H_PAGOS.indexOf('estado');
     for (let i = 1; i < data.length; i++) {
-      const est = String(data[i][colEstado]).trim();
-      if (est === 'PENDIENTE') pagosPendientes++;
-      else if (est === 'PENDIENTE_FASE5') pagosFase5Pendientes++;
+      if (String(data[i][colEstado]).trim() === 'PENDIENTE') pagosPendientes++;
     }
   }
   estado.pagosPendientes = pagosPendientes;
+
+  // Fase 5: CAMBIADO — ya no existe "PENDIENTE_FASE5". Ahora lo que
+  // indica que hay trabajo pendiente en Fase 5 es: filas ya
+  // "CONCILIADO" por Fase 4 con un código de FASE5_CODIGOS_ANTICIPO,
+  // que todavía no se han agregado en un asiento de Fase 5 (es decir,
+  // que agruparConciliadosAnticipoPorFecha() todavía las recogería).
+  let pagosFase5Pendientes = 0;
+  const codigosAnticipo = (cfg['FASE5_CODIGOS_ANTICIPO'] || '').split('|').map(s => s.trim()).filter(Boolean);
+  if (wsPagos && wsPagos.getLastRow() > 1 && codigosAnticipo.length > 0) {
+    const data = wsPagos.getDataRange().getValues();
+    const colEstado = H_PAGOS.indexOf('estado');
+    const colCode = H_PAGOS.indexOf('code');
+    for (let i = 1; i < data.length; i++) {
+      const est = String(data[i][colEstado]).trim();
+      const code = String(data[i][colCode]).trim();
+      if (est === 'CONCILIADO' && codigosAnticipo.includes(code)) pagosFase5Pendientes++;
+    }
+  }
   estado.pagosFase5Pendientes = pagosFase5Pendientes;
 
   return estado;
@@ -146,7 +180,7 @@ function panelCorregirRedondeos() {
   }
 }
 
-// ── Fase 2 ───────────────────────────────────────────────────────
+// ── Fase 2 (ya incluye Fees Gateway dentro de cada resultado) ──────
 function panelCargarCobros() {
   try {
     const pendientes = listarJsonsPendientesCobros();
@@ -159,7 +193,7 @@ function panelCargarCobros() {
   }
 }
 
-// ── Fase 4 / Fase 5 ─────────────────────────────────────────────
+// ── Fase 4 ──────────────────────────────────────────────────────
 function panelSaldarFacturas() {
   try {
     const porFecha = agruparPagosPendientesPorFecha();
@@ -173,17 +207,13 @@ function panelSaldarFacturas() {
   }
 }
 
+// ── Fase 5 — ACTUALIZADO al nuevo 13_Fase5.gs (genérico por
+// FASE5_CODIGOS_ANTICIPO, ya no lee PENDIENTE_FASE5 ni cruza FACTURAS) ──
 function panelConsumirAnticipos() {
   try {
-    const candidatos = listarPagosFase5Pendientes();
-    if (candidatos.length === 0) return { ok: true, mensaje: 'No hay pagos INV pendientes de Fase 5.', resumen: [] };
-
-    const porFecha = {};
-    for (const p of candidatos) {
-      if (!porFecha[p.fecha]) porFecha[p.fecha] = [];
-      porFecha[p.fecha].push(p);
-    }
+    const porFecha = agruparConciliadosAnticipoPorFecha();
     const fechas = Object.keys(porFecha).sort();
+    if (fechas.length === 0) return { ok: true, mensaje: 'No hay pagos conciliados pendientes de agregar en Fase 5.', resumen: [] };
 
     const cfg = getConfig();
     const uid = getOdooUid(cfg);

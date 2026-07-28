@@ -167,7 +167,7 @@
 
   <div class="cabecera">
     <div>
-      <div class="marca">Ibiza Rocks Hotel</div>
+      <div class="marca"><?= nombrePropiedad ?></div>
       <h1>Mews ⇄ Odoo</h1>
       <div class="subtitulo">Panel de control — Facturas, Cobros y Saldar</div>
     </div>
@@ -270,9 +270,11 @@
       f4.push(linea(e.pagosPendientes > 0 ? 'aviso' : 'ok', e.pagosPendientes, 'pago(s) pendiente(s) de conciliar'));
       document.getElementById('estado-fase4').innerHTML = f4.join('');
 
-      // Fase 5
+      // Fase 5 — ahora cuenta pagos ya conciliados por Fase 4 (con un
+      // código de FASE5_CODIGOS_ANTICIPO) que aún no se han agregado
+      // en un asiento de Fase 5.
       const f5 = [];
-      f5.push(linea(e.pagosFase5Pendientes > 0 ? 'aviso' : 'ok', e.pagosFase5Pendientes, 'pago(s) INV pendiente(s) de revisar (agencia o Ibiza Rocks Direct)'));
+      f5.push(linea(e.pagosFase5Pendientes > 0 ? 'aviso' : 'ok', e.pagosFase5Pendientes, 'pago(s) ya conciliado(s) pendiente(s) de agregar en Fase 5'));
       document.getElementById('estado-fase5').innerHTML = f5.join('');
     }
 
