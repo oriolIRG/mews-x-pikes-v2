@@ -85,21 +85,40 @@ function auditarFacturasCore(desde, hasta) {
   if (!companyId) throw new Error('Falta ODOO_COMPANY_ID en CONFIG.');
 
   if (!desde) {
-    desde = cfg['AUDITORIA_FECHA_DESDE'] ||
-      Utilities.formatDate(new Date(Date.now() - (parseInt(cfg['AUDITORIA_DIAS_ATRAS']) || 30) * 86400000),
-        'Europe/Madrid', 'yyyy-MM-dd');
+    const cfgDesde = cfg['AUDITORIA_FECHA_DESDE'];
+    desde = cfgDesde
+      ? formatFechaOdoo(cfgDesde) // por si Sheets lo autoconvirtió a tipo Fecha
+      : Utilities.formatDate(new Date(Date.now() - (parseInt(cfg['AUDITORIA_DIAS_ATRAS']) || 30) * 86400000),
+          'Europe/Madrid', 'yyyy-MM-dd');
   }
   if (!hasta) {
-    hasta = cfg['AUDITORIA_FECHA_HASTA'] || Utilities.formatDate(new Date(), 'Europe/Madrid', 'yyyy-MM-dd');
+    const cfgHasta = cfg['AUDITORIA_FECHA_HASTA'];
+    hasta = cfgHasta
+      ? formatFechaOdoo(cfgHasta) // por si Sheets lo autoconvirtió a tipo Fecha
+      : Utilities.formatDate(new Date(), 'Europe/Madrid', 'yyyy-MM-dd');
   }
 
-  // SOLO LECTURA — search_read, nada más. Sin journal_id fijo a
-  // propósito: las facturas pueden repartirse en varios diarios según
-  // serie, así que se filtra por tipo de movimiento + compañía + rango
-  // de fechas, no por un diario concreto.
+  // Diarios reales de la integración — cualquier clave SERIE_<SERIE>
+  // de CONFIG apunta a un journal_id de Odoo (varias series pueden
+  // compartir el mismo diario, ej. PHF/RPHF ambas al 196 — se
+  // deduplica). Así el audit solo mira lo que la integración misma
+  // sube, no cualquier factura manual que exista en la compañía.
+  const journalIds = [...new Set(
+    Object.keys(cfg)
+      .filter(k => k.startsWith('SERIE_'))
+      .map(k => parseInt(cfg[k]))
+      .filter(v => !isNaN(v))
+  )];
+  if (journalIds.length === 0) {
+    throw new Error('No se encontró ninguna clave SERIE_<SERIE> en CONFIG — no hay diarios que auditar.');
+  }
+
+  // SOLO LECTURA — search_read, nada más. Filtrado por los diarios
+  // reales de la integración (journalIds), no por toda la compañía.
   const facturas = odooExec(cfg, uid, 'account.move', 'search_read',
     [[
       ['move_type', 'in', ['out_invoice', 'out_refund']],
+      ['journal_id', 'in', journalIds],
       ['company_id', '=', companyId],
       ['invoice_date', '>=', desde],
       ['invoice_date', '<=', hasta],
@@ -125,6 +144,13 @@ function auditarFacturasCore(desde, hasta) {
   const ahora = Utilities.formatDate(new Date(), 'Europe/Madrid', 'yyyy-MM-dd HH:mm');
   let nuevas = 0, actualizadas = 0;
 
+  // Construir TODO en memoria primero — nada de escribir en el Sheet
+  // dentro del bucle. Las actualizaciones se acumulan indexadas por
+  // fila real, y las altas en un array aparte; al final se vuelcan
+  // con como mucho 2 llamadas a Sheets (setValues), no una por factura.
+  const actualizacionesPorFila = {}; // rowNum -> fila
+  const filasNuevas = [];
+
   for (const f of facturas) {
     const fila = [
       f.id,
@@ -139,12 +165,37 @@ function auditarFacturasCore(desde, hasta) {
 
     const rowNum = filaPorId[String(f.id)];
     if (rowNum) {
-      ws.getRange(rowNum, 1, 1, H_AUDITORIA.length).setValues([fila]);
+      actualizacionesPorFila[rowNum] = fila;
       actualizadas++;
     } else {
-      ws.appendRow(fila);
+      filasNuevas.push(fila);
       nuevas++;
     }
+  }
+
+  // 1. Actualizaciones — como pueden estar en filas salteadas (no
+  // contiguas), se agrupan en TRAMOS CONTIGUOS de filas consecutivas
+  // y cada tramo se escribe con una sola llamada, en vez de una
+  // llamada por fila individual. Con esto, ni siquiera una hoja con
+  // cambios muy dispersos degenera en "una llamada por factura".
+  const filasAActualizar = Object.keys(actualizacionesPorFila).map(Number).sort((a, b) => a - b);
+  let idx = 0;
+  while (idx < filasAActualizar.length) {
+    const inicio = filasAActualizar[idx];
+    let fin = inicio;
+    while (idx + 1 < filasAActualizar.length && filasAActualizar[idx + 1] === fin + 1) {
+      idx++;
+      fin = filasAActualizar[idx];
+    }
+    const tramo = [];
+    for (let r = inicio; r <= fin; r++) tramo.push(actualizacionesPorFila[r]);
+    ws.getRange(inicio, 1, tramo.length, H_AUDITORIA.length).setValues(tramo);
+    idx++;
+  }
+
+  // 2. Altas — todas de golpe, en un único rango nuevo al final.
+  if (filasNuevas.length > 0) {
+    ws.getRange(ws.getLastRow() + 1, 1, filasNuevas.length, H_AUDITORIA.length).setValues(filasNuevas);
   }
 
   return {
