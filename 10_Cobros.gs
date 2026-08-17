@@ -8,8 +8,7 @@
  *  contrapartida por cada categoría. Los cobros van en una línea, los
  *  reembolsos (importes negativos) en otra separada, sin netear.
  *
- *  CONFIG necesario, 3 claves por cada categoría de Mews que uses
- *  (ejemplo con las 6 vistas hasta ahora):
+ *  CONFIG necesario, 3 claves por cada categoría de Mews que uses:
  *    COBRO_CUENTA_<CATEGORIA>          → cuenta dedicada (id Odoo)
  *    COBRO_CONTRAPARTIDA_<CATEGORIA>   → cuenta de contrapartida (id Odoo)
  *    COBRO_ETIQUETA_<CATEGORIA>        → texto descriptivo del apunte
@@ -17,11 +16,18 @@
  *  (mayúsculas, espacios/guiones → _). Ej. "CASH - RECEPTION" →
  *  CASH_RECEPTION.
  *
+ *  COBRO_CATEGORIAS_EXCLUIR → lista separada por "|" de categorías
+ *  (texto exacto de Mews, case-insensitive) que NO deben contabilizarse
+ *  aquí porque ya se gestionan en otra fase — ej. "INVOICE PAYMENT" en
+ *  IRH es la aplicación de un anticipo ya cobrado (Fase 5), no dinero
+ *  nuevo entrando; contabilizarlo aquí lo duplicaría.
+ *
  *  Más: FASE2_JOURNAL_ID → diario único donde se crea el asiento.
  *
- *  Si aparece una categoría sin las 3 claves en CONFIG, el proceso
- *  para con un error claro — no se inventa nada ni se salta en
- *  silencio (mismo criterio que "Serie X sin diario" en Fase 1).
+ *  Si aparece una categoría sin las 3 claves en CONFIG (y no está en
+ *  COBRO_CATEGORIAS_EXCLUIR), el proceso para con un error claro — no
+ *  se inventa nada ni se salta en silencio (mismo criterio que "Serie
+ *  X sin diario" en Fase 1).
  * ================================================================
  */
 
@@ -75,6 +81,9 @@ function procesarJsonsDeDriveCobrosCore(pendientes) {
       const resultado = crearAsientoCobrosDelDia(data);
       resultados.push(`${file.getName()}: ${resultado.mensaje}`);
 
+      const resultadoFees = crearAsientoFeesGatewayDelDia(data);
+      resultados.push(`  ↳ Fees: ${resultadoFees.mensaje}`);
+
       if (carpetaProcesados) file.moveTo(carpetaProcesados);
       else file.setTrashed(true);
     } catch (err) {
@@ -102,10 +111,22 @@ function crearAsientoCobrosDelDia(data) {
     return { creado: false, mensaje: `Ya existe un asiento para ${fecha} (id ${existente[0].id}), no se duplica.` };
   }
 
-  // 1. Extraer todos los pagos de "Cash payments" y "External payments"
+  // Categorías que se excluyen aquí porque ya se gestionan en otra fase
+  // (ej. INVOICE PAYMENT en IRH = aplicación de anticipo ya cobrado,
+  // se gestiona en Fase 5 — contabilizarlo aquí también lo duplicaría).
+  const categoriasExcluir = (cfg['COBRO_CATEGORIAS_EXCLUIR'] || '')
+    .split('|').map(s => s.trim().toUpperCase()).filter(Boolean);
+
+  // 1. Extraer todos los pagos de CUALQUIER documento que tenga
+  // columnas "Accounting category" y "Value" — confirmado con datos
+  // reales que Mews no siempre mete todo en "Cash payments"/"External
+  // payments": en esta propiedad el dinero de tarjeta/gateway va en
+  // "Card payments" y el facturado a cuenta en "Invoice payments".
+  // Generalizar así evita depender de en qué documento concreto decida
+  // Mews poner cada tipo de pago, aquí o en otra propiedad.
   const pagos = [];
   for (const doc of data.Documents) {
-    if (doc.Name !== 'Cash payments' && doc.Name !== 'External payments') continue;
+    if (doc.Name === 'Parameters') continue;
     if (!Array.isArray(doc.Data) || doc.Data.length < 2) continue;
 
     const headers = doc.Data[0];
@@ -116,6 +137,7 @@ function crearAsientoCobrosDelDia(data) {
     for (const row of doc.Data.slice(1)) {
       const categoria = String(row[idxCat] || '').trim();
       if (!categoria || categoria === 'Total') continue;
+      if (categoriasExcluir.includes(categoria.toUpperCase())) continue;
       const valor = parseFloat(row[idxVal]);
       if (isNaN(valor) || valor === 0) continue;
       pagos.push({ categoria, valor });

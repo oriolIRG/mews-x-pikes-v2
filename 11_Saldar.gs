@@ -27,6 +27,29 @@
  *    FASE4_BILLS_EXCLUIR     → opcional, patrones de Bill a ignorar
  *                              (bills técnicos de Mews sin factura en
  *                              Odoo), separados por |
+ *    FASE4_CODIGOS_DIFERIR   → opcional, códigos que necesitan un
+ *                              tratamiento especial en vez de saldarse
+ *                              aquí sin más (ver más abajo).
+ *
+ *  CAMBIO en el tratamiento de FASE4_CODIGOS_DIFERIR (ej. "INV" en
+ *  IRH): antes, cualquier pago con ese código se difería SIEMPRE a
+ *  Fase 5, sin mirar nada más. Ahora se mira también la agencia del
+ *  bill (columna `agencia` de FACTURAS):
+ *
+ *    código en FASE4_CODIGOS_DIFERIR + agencia == FASE5_NOMBRE_AGENCIA_DIRECTA
+ *        → NO se difiere, se salda AQUÍ MISMO como cualquier otro
+ *          código (contra FASE4_CUENTA_<CODE>) — es la reserva directa
+ *          consumiendo su propio anticipo ya cobrado en Fase 2.
+ *
+ *    código en FASE4_CODIGOS_DIFERIR + otra agencia (o sin agencia)
+ *        → se deja intacto, SIN tocar el estado (sigue "PENDIENTE").
+ *          No es un anticipo, es "facturado a agencia, aún sin cobrar
+ *          de verdad" — ya llegará su pago real (transferencia) como
+ *          otro código en un futuro Closed report.
+ *
+ *  Ya NO existe el estado "PENDIENTE_FASE5": Fase 5 ahora solo agrega
+ *  lo que Fase 4 ya concilió hoy bajo ese código + esa agencia, no
+ *  gestiona nada por su cuenta (ver 13_Fase5.gs).
  *
  *  Si algún pago del día tiene un código sin mapear, o una factura
  *  que no está en FACTURAS o no está confirmada en Odoo, se bloquea
@@ -125,27 +148,46 @@ function saldarFacturasDelDia(cfg, uid, fecha, pagosDelDia) {
     return { creado: false, mensaje: `Ya existe un asiento para ${fecha} (id ${existente[0].id}), no se duplica.` };
   }
 
-  // -1. Códigos a diferir a una fase futura (CONFIG, ej. "INV" para
-  // propiedades donde ese código no siempre significa un cobro real
-  // — a veces es "facturado a agencia, aún sin pagar", y a veces es
-  // "reserva directa consumiendo un anticipo ya cobrado en Fase 2",
-  // que necesita cruzar contra saldo existente, no un cobro nuevo).
-  // Se excluyen del todo aquí, marcados aparte, sin bloquear el día.
+  // MOVIDO AQUÍ ARRIBA (antes se leía más tarde, en el paso 2):
+  // necesitamos la agencia de cada bill YA para decidir si un código
+  // diferido se salda hoy o se deja intacto.
+  const factData = wsFact.getDataRange().getValues();
+  const facturaPorBill = {};
+  for (let i = 1; i < factData.length; i++) {
+    facturaPorBill[String(factData[i][H_FACT.indexOf('bill_mews')]).trim()] = {
+      rowNum: i + 1,
+      estado: String(factData[i][H_FACT.indexOf('estado')]).trim(),
+      invoiceId: factData[i][H_FACT.indexOf('odoo_invoice_id')],
+      invoiceName: factData[i][H_FACT.indexOf('bill_odoo')],
+      agencia: String(factData[i][H_FACT.indexOf('agencia')]).trim(),
+    };
+  }
+
+  // -1. Códigos a diferir (CONFIG) — CAMBIADO: ahora condicionado a la agencia.
   const codigosDiferir = (cfg['FASE4_CODIGOS_DIFERIR'] || '').split('|').map(s => s.trim()).filter(Boolean);
+  const nombreAgenciaDirecta = String(cfg['FASE5_NOMBRE_AGENCIA_DIRECTA'] || '').trim().toLowerCase();
+
   const pagosSinDiferir = [];
   for (const p of pagosDelDia) {
-    if (codigosDiferir.includes(p.code)) {
-      actualizarFila(wsPagos, p.rowNum, H_PAGOS, {
-        estado: 'PENDIENTE_FASE5',
-        notas: `Código "${p.code}" diferido (FASE4_CODIGOS_DIFERIR) — pendiente de proceso aparte.`
-      });
-    } else {
+    if (!codigosDiferir.includes(p.code)) {
+      pagosSinDiferir.push(p);
+      continue;
+    }
+    const f = facturaPorBill[p.bill];
+    const agencia = f ? f.agencia.toLowerCase() : '';
+
+    if (nombreAgenciaDirecta && agencia === nombreAgenciaDirecta) {
+      // Agencia directa: consumo del propio anticipo — se salda AQUÍ
+      // MISMO, como cualquier otro código. Ya no se difiere.
       pagosSinDiferir.push(p);
     }
+    // Si no es la agencia directa (u otra agencia, o sin agencia):
+    // no se hace nada — se deja tal cual, sigue "PENDIENTE". Ya NO se
+    // marca "PENDIENTE_FASE5".
   }
 
   if (pagosSinDiferir.length === 0) {
-    return { creado: false, mensaje: `Todos los pagos de ${fecha} eran de códigos diferidos (${codigosDiferir.join(', ')}) — nada que conciliar hoy.` };
+    return { creado: false, mensaje: `Todos los pagos de ${fecha} eran de códigos diferidos sin resolver hoy (${codigosDiferir.join(', ')}) — nada que conciliar.` };
   }
 
   // 0. Bills "solo pagos" cuyo total neta a cero (ej. un cobro
@@ -191,23 +233,12 @@ function saldarFacturasDelDia(cfg, uid, fecha, pagosDelDia) {
     throw new Error('Códigos de pago sin mapeo (FASE4_CUENTA_<CODE>): ' + [...codigosSinMapeo].join(', ') + ' — día bloqueado.');
   }
 
-  // 2. Agrupar por factura (Bill) y cruzar contra FACTURAS/Odoo — TODAS
-  // tienen que encontrarse y estar CREADA, o se bloquea el día entero.
+  // 2. Agrupar por factura (Bill) y cruzar contra Odoo — reutilizando
+  // facturaPorBill que ya leímos arriba, no hace falta releer FACTURAS.
   const porBill = {};
   for (const p of pagosRelevantes) {
     if (!porBill[p.bill]) porBill[p.bill] = 0;
     porBill[p.bill] += p.amount;
-  }
-
-  const factData = wsFact.getDataRange().getValues();
-  const facturaPorBill = {};
-  for (let i = 1; i < factData.length; i++) {
-    facturaPorBill[String(factData[i][H_FACT.indexOf('bill_mews')]).trim()] = {
-      rowNum: i + 1,
-      estado: String(factData[i][H_FACT.indexOf('estado')]).trim(),
-      invoiceId: factData[i][H_FACT.indexOf('odoo_invoice_id')],
-      invoiceName: factData[i][H_FACT.indexOf('bill_odoo')],
-    };
   }
 
   const billsProblema = [];

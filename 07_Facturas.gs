@@ -138,7 +138,7 @@ function parsearClosed(data) {
 
   reordenarYRecalcularContinuidad();
   avisarBillsSoloPago(items, cfg);
-  extraerPagosParaFase4(items);
+  extraerPagosParaFase4(items, cfg);
 
   return { nFacturas: nuevasFacturas.length, nLineas: nuevasLineas.length };
 }
@@ -147,7 +147,18 @@ function parsearClosed(data) {
 // Fase 1 solo usa Type: Revenue para las facturas — estas líneas de
 // pago no se usan aquí, se guardan para cuando Fase 4 las necesite,
 // más adelante, una vez las facturas estén confirmadas en Odoo.
-function extraerPagosParaFase4(items) {
+//
+// CAMBIO: aplica el MISMO filtro BILL_TYPE_EXCLUIR que ya usa
+// parsearClosed() para decidir qué bills NO se facturan (ej. "HIP").
+// Antes esto no se comprobaba aquí, así que los pagos de un bill
+// excluido a propósito en Fase 1 igualmente se colaban en
+// PAGOS_CLOSED — y Fase 4 nunca iba a encontrar esa factura en
+// FACTURAS (porque nunca se creó adrede), bloqueando el día entero
+// con "bill no está en FACTURAS". 'Bill type code' es un atributo
+// del bill, no de la línea — se repite igual en las líneas Payment
+// que en las Revenue, así que se puede comprobar aquí directamente,
+// sin cruzar contra las líneas Revenue de ese mismo bill.
+function extraerPagosParaFase4(items, cfg) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let wsPagos = ss.getSheetByName(TAB.PAGOS);
   if (!wsPagos) {
@@ -156,6 +167,8 @@ function extraerPagosParaFase4(items) {
     wsPagos.getRange(1, 1, 1, H_PAGOS.length).setFontWeight('bold');
     wsPagos.setFrozenRows(1);
   }
+
+  const excluidosBillType = (cfg['BILL_TYPE_EXCLUIR'] || '').split('|').map(s => s.trim()).filter(Boolean);
 
   // Dedup: no reinsertar la misma línea si este JSON ya se procesó
   // antes. OJO: se cuenta por OCURRENCIAS, no solo presencia — dos
@@ -181,12 +194,19 @@ function extraerPagosParaFase4(items) {
 
   const huellaCountEstaTanda = {};
   const nuevas = [];
-  let totalPaymentItems = 0, sinBill = 0, importeInvalido = 0, saltadasPorDedup = 0;
+  let totalPaymentItems = 0, sinBill = 0, importeInvalido = 0, saltadasPorDedup = 0, excluidasPorBillType = 0;
   for (const item of items) {
     if (item['Type'] !== 'Payment') continue;
     totalPaymentItems++;
     const bill = String(item['Bill'] || '').trim();
     if (!bill) { sinBill++; continue; }
+
+    const billTypeCode = String(item['Bill type code'] || '').trim();
+    if (billTypeCode && excluidosBillType.includes(billTypeCode)) {
+      excluidasPorBillType++;
+      continue;
+    }
+
     const code = String(item['Code'] || '').trim();
     const amount = parseFloat(item['Amount']);
     if (isNaN(amount) || amount === 0) { importeInvalido++; continue; }
@@ -207,7 +227,8 @@ function extraerPagosParaFase4(items) {
 
   Logger.log(
     `extraerPagosParaFase4: items totales=${items.length}, Type=Payment=${totalPaymentItems}, ` +
-    `sin bill=${sinBill}, importe inválido/0=${importeInvalido}, saltadas por dedup=${saltadasPorDedup}, ` +
+    `sin bill=${sinBill}, excluidas por BILL_TYPE_EXCLUIR=${excluidasPorBillType}, ` +
+    `importe inválido/0=${importeInvalido}, saltadas por dedup=${saltadasPorDedup}, ` +
     `nuevas a guardar=${nuevas.length}`
   );
 
@@ -931,9 +952,11 @@ function corregirRedondeosAutomaticamenteCore() {
   const uid = getOdooUid(cfg);
   const cuentaId = parseInt(cfg['CUENTA_REDONDEO_ID']);
   const margen = parseFloat(cfg['MARGEN_REDONDEO']);
+  const analyticId = parseInt(cfg['ANALYTIC_ACCOUNT_ID']);
 
   if (!cuentaId) throw new Error('Falta CUENTA_REDONDEO_ID en CONFIG.');
   if (isNaN(margen)) throw new Error('Falta MARGEN_REDONDEO en CONFIG (ej. 0.05).');
+  if (!analyticId) throw new Error('Falta ANALYTIC_ACCOUNT_ID en CONFIG.');
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const wsCuadre = ss.getSheetByName('CUADRE_GROSS');
@@ -969,6 +992,7 @@ function corregirRedondeosAutomaticamenteCore() {
           price_unit: -diferencia,
           tax_ids: [[6, 0, []]],
           account_id: cuentaId,
+          analytic_distribution: { [analyticId]: 100 },
         }]]
       }], {});
 
