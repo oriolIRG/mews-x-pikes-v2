@@ -29,13 +29,36 @@
  *                                 (default: hoy)
  *
  *  Pestaña AUDITORIA_FACTURAS (se crea sola si no existe), columnas:
- *    odoo_id | serie_numero | fecha | importe_total | cliente |
- *    localizador | estado_odoo | ultima_revision
+ *    odoo_id | serie_numero | serie | numero | fecha | importe_total |
+ *    cliente | localizador | estado_odoo | ultima_revision
+ *
+ *  NOTA SOBRE EL CAMBIO serie/numero (añadidas tras el campo original
+ *  serie_numero): esta pestaña hace UPSERT por odoo_id, no borra y
+ *  reescribe todo cada vez. Como serie/numero se insertan EN MEDIO del
+ *  layout de columnas (no al final), cualquier fila antigua que no se
+ *  actualice en una ejecución concreta queda con las columnas de la
+ *  derecha desalineadas respecto a la cabecera nueva, hasta que se
+ *  vuelva a tocar esa fila. -> LA PRIMERA VEZ QUE SE DESPLIEGUE ESTE
+ *  CAMBIO, LANZAR UNA VEZ "🔁 Auditoría completa" (auditarFacturasCompleto)
+ *  para que reescriba TODAS las filas existentes con el layout nuevo.
  * ================================================================
  */
 
 const TAB_AUDITORIA = 'AUDITORIA_FACTURAS';
-const H_AUDITORIA = ['odoo_id', 'serie_numero', 'fecha', 'importe_total', 'cliente', 'localizador', 'estado_odoo', 'ultima_revision'];
+const H_AUDITORIA = ['odoo_id', 'serie_numero', 'serie', 'numero', 'fecha', 'importe_total', 'cliente', 'localizador', 'estado_odoo', 'ultima_revision'];
+
+// Separa el 'name' de Odoo (p.ej. "PHF 2000766", "RPHF/2001234", "PHC 2000123")
+// en serie (prefijo de letras) y numero (dígitos finales), sea cual sea el
+// separador usado entre ambos (espacio, '/', '-'...). Si el nombre no encaja
+// con ese patrón (p.ej. factura en borrador con name = '/', sin numerar aún),
+// devuelve ambos vacíos en vez de forzar un valor incorrecto.
+function extraerSerieYNumeroOdoo_(nombre) {
+  if (!nombre) return { serie: '', numero: '' };
+  const texto = nombre.toString().trim();
+  const m = texto.match(/^([A-Za-z]+)[^0-9]*(\d+)$/);
+  if (!m) return { serie: '', numero: '' };
+  return { serie: m[1].toUpperCase(), numero: m[2] };
+}
 
 // Wrapper de menú — ventana rodante (rápido, el uso normal).
 function auditarFacturas() {
@@ -152,9 +175,12 @@ function auditarFacturasCore(desde, hasta) {
   const filasNuevas = [];
 
   for (const f of facturas) {
+    const sn = extraerSerieYNumeroOdoo_(f.name);
     const fila = [
       f.id,
       f.name,
+      sn.serie,
+      sn.numero,
       f.invoice_date,
       f.amount_total,
       Array.isArray(f.partner_id) ? f.partner_id[1] : '',
