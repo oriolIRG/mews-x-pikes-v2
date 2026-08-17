@@ -952,9 +952,11 @@ function corregirRedondeosAutomaticamenteCore() {
   const uid = getOdooUid(cfg);
   const cuentaId = parseInt(cfg['CUENTA_REDONDEO_ID']);
   const margen = parseFloat(cfg['MARGEN_REDONDEO']);
+  const analyticId = parseInt(cfg['ANALYTIC_ACCOUNT_ID']);
 
   if (!cuentaId) throw new Error('Falta CUENTA_REDONDEO_ID en CONFIG.');
   if (isNaN(margen)) throw new Error('Falta MARGEN_REDONDEO en CONFIG (ej. 0.05).');
+  if (!analyticId) throw new Error('Falta ANALYTIC_ACCOUNT_ID en CONFIG.');
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const wsCuadre = ss.getSheetByName('CUADRE_GROSS');
@@ -990,6 +992,7 @@ function corregirRedondeosAutomaticamenteCore() {
           price_unit: -diferencia,
           tax_ids: [[6, 0, []]],
           account_id: cuentaId,
+          analytic_distribution: { [analyticId]: 100 },
         }]]
       }], {});
 

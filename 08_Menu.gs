@@ -24,6 +24,8 @@ function onOpen() {
     .addItem('🧮 Corregir redondeos pequeños', 'corregirRedondeosAutomaticamente')
     .addItem('🔄 Reintentar facturas con error', 'reprocesarErrores')
     .addSeparator()
+    .addItem('📊 Consolidar Auditoría Mews', 'consolidarAuditoriaMews')
+    .addSeparator()
     .addItem('⚙️ Comprobar configuración', 'verificarConfig')
     .addItem('🔌 Probar conexión con Odoo', 'testConexionOdoo')
     .addToUi();
