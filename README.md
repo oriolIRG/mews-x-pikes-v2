@@ -616,3 +616,18 @@ coincide exactamente con la agencia directa configurada. Nueva clave:
 ```
 FASE5_NOMBRE_AGENCIA_DIRECTA   Ibiza Rocks Direct
 ```
+
+## Corrección importante en Fase 2: no todo el dinero está en "Cash payments"/"External payments"
+
+`crearAsientoCobrosDelDia()` solo leía los documentos `Cash payments`
+y `External payments` del Payment Report. Confirmado con datos reales
+de Ibiza Rocks Hotel: el dinero de tarjeta/gateway venía en `Card
+payments`, y el facturado a cuenta en `Invoice payments` — documentos
+que el código nunca abría. No era un problema del export de Mews (se
+llegó a sospechar eso primero, incorrectamente) — los datos SÍ estaban
+en el JSON, solo que en documentos que el código no miraba.
+
+Ahora se procesa **cualquier documento** del Payment Report que tenga
+las columnas `Accounting category` y `Value` — sin importar su
+nombre — así no depende de en cuál decida Mews meter cada tipo de
+pago, ni aquí ni en otras propiedades futuras.
