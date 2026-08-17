@@ -98,7 +98,6 @@ function parsearClosed(data) {
       associatedProfile
     ]);
 
-
     // Agrupar líneas por (código de Mews, tipo de IVA). Importante:
     // agrupar SOLO por código perdería la separación entre tipos de
     // IVA distintos dentro de la misma factura.
@@ -425,52 +424,84 @@ function listarJsonsPendientesFacturas() {
 }
 
 // Sin UI — hace el trabajo real, devuelve un resumen en vez de un alert.
+//
+// LOCK (nuevo): protege contra ejecuciones solapadas — si alguien
+// relanza "Cargar facturas nuevas" (menú o panel web) mientras la
+// anterior sigue corriendo, sin esto ambas leían/escribían FACTURAS
+// a la vez sin ningún candado (confirmado en producción: dos
+// ejecuciones de importación solapadas el mismo día, con
+// reordenarYRecalcularContinuidad() —que reescribe TODA la pestaña
+// FACTURAS de golpe— disparándose sin protección en cada una).
+// Con tryLock(5000): si hay otra ejecución en curso, esta falla
+// rápido con un mensaje claro en vez de arrancar en paralelo.
 function procesarJsonsDeDriveCore(pendientes) {
-  const cfg = getConfig();
-  const procesadosId = cfg['FOLDER_ID_PROCESADOS'];
-  const carpetaProcesados = procesadosId ? DriveApp.getFolderById(procesadosId) : null;
-
-  let totalFacturas = 0, procesados = 0, errores = 0;
-  const detalle = [];
-
-  for (const file of pendientes) {
-    const nombre = file.getName();
-    try {
-      const raw = file.getBlob().getDataAsString();
-      const data = JSON.parse(raw);
-      const meta = detectarTipoReporte(data);
-
-      if (meta.tipo === 'ACCOUNTING_CLOSED') {
-        const { nFacturas } = parsearClosed(data);
-        totalFacturas += nFacturas;
-        detalle.push(`✅ ${nombre}: ${nFacturas} facturas nuevas`);
-        registrarLog(meta.tipo, meta.empresa, nFacturas, md5(raw), 'OK_DRIVE', `${nFacturas} facturas`);
-      } else {
-        detalle.push(`⏭️ ${nombre}: tipo ${meta.tipo} (no es Facturas)`);
-        registrarLog(meta.tipo, meta.empresa, meta.numItems, md5(raw), 'IGNORADO', 'No es Accounting Closed');
-      }
-
-      if (carpetaProcesados) file.moveTo(carpetaProcesados);
-      else file.setTrashed(true);
-      procesados++;
-
-    } catch (err) {
-      detalle.push(`❌ ${nombre}: ${err.message.substring(0, 80)}`);
-      errores++;
-    }
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) {
+    throw new Error('⏳ Ya hay una importación de facturas en curso (lanzada por otra pestaña o persona). Espera a que termine —puede tardar varios minutos— antes de volver a intentarlo. Si la relanzas ahora, se pueden duplicar datos.');
   }
 
-  return { procesados, totalFacturas, errores, detalle };
+  try {
+    const cfg = getConfig();
+    const procesadosId = cfg['FOLDER_ID_PROCESADOS'];
+    const carpetaProcesados = procesadosId ? DriveApp.getFolderById(procesadosId) : null;
+
+    let totalFacturas = 0, procesados = 0, errores = 0;
+    const detalle = [];
+
+    for (const file of pendientes) {
+      const nombre = file.getName();
+      try {
+        const raw = file.getBlob().getDataAsString();
+        const data = JSON.parse(raw);
+        const meta = detectarTipoReporte(data);
+
+        if (meta.tipo === 'ACCOUNTING_CLOSED') {
+          const { nFacturas } = parsearClosed(data);
+          totalFacturas += nFacturas;
+          detalle.push(`✅ ${nombre}: ${nFacturas} facturas nuevas`);
+          registrarLog(meta.tipo, meta.empresa, nFacturas, md5(raw), 'OK_DRIVE', `${nFacturas} facturas`);
+        } else {
+          detalle.push(`⏭️ ${nombre}: tipo ${meta.tipo} (no es Facturas)`);
+          registrarLog(meta.tipo, meta.empresa, meta.numItems, md5(raw), 'IGNORADO', 'No es Accounting Closed');
+        }
+
+        if (carpetaProcesados) file.moveTo(carpetaProcesados);
+        else file.setTrashed(true);
+        procesados++;
+
+      } catch (err) {
+        detalle.push(`❌ ${nombre}: ${err.message.substring(0, 80)}`);
+        errores++;
+      }
+    }
+
+    return { procesados, totalFacturas, errores, detalle };
+
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ── 3. Enviar facturas PENDIENTES a Odoo ───────────────────────────
 // Sin UI — la usa tanto el wrapper del menú (justo debajo) como el
 // panel web. Lanza si hay un error general (CONFIG faltante, etc.);
 // los errores por factura individual quedan dentro del resultado.
+//
+// LOCK (nuevo): mismo motivo que en procesarJsonsDeDriveCore — esta
+// es la función que confirmadamente se solapó consigo misma en
+// producción (dos llamadas a panelImportarFacturas casi a la vez),
+// y es la causa directa de las facturas duplicadas en Odoo que ya se
+// habían visto antes de este fix.
 function importarFacturasCore() {
-  const cfg = getConfig();
-  const uid = getOdooUid(cfg);
-  const mappings = getMappings(cfg);
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) {
+    throw new Error('⏳ Ya hay un envío de facturas a Odoo en curso (lanzado por otra pestaña o persona). Espera a que termine —puede tardar varios minutos— antes de volver a intentarlo. Si lo relanzas ahora, se pueden duplicar facturas en Odoo.');
+  }
+
+  try {
+    const cfg = getConfig();
+    const uid = getOdooUid(cfg);
+    const mappings = getMappings(cfg);
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const wsFact = ss.getSheetByName(TAB.FACTURAS);
     const wsLin = ss.getSheetByName(TAB.LINEAS);
@@ -622,7 +653,11 @@ function importarFacturasCore() {
       Utilities.sleep(300);
     }
 
-  return { creadas, saltadas, errores, discrepanciasCuadre, errDetail };
+    return { creadas, saltadas, errores, discrepanciasCuadre, errDetail };
+
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // Wrapper del menú: llama a la versión Core y muestra el resultado
