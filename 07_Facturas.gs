@@ -133,6 +133,12 @@ function parsearClosed(data) {
   if (nuevasFacturas.length > 0) {
     appendRows(wsFact, nuevasFacturas);
     appendRows(wsLin, nuevasLineas);
+
+    // 🔍 CHIVATO TEMPORAL — quitar una vez diagnosticado el bug de fecha_cierre
+    Logger.log('🔍 [parsearClosed] Facturas nuevas escritas por appendRows:');
+    nuevasFacturas.forEach(f => {
+      Logger.log(`   bill_mews=${f[0]} | fecha_cierre=${f[4]}`);
+    });
   }
 
   reordenarYRecalcularContinuidad();
@@ -800,6 +806,24 @@ function reordenarYRecalcularContinuidad() {
   }
 
   const numCols = headers.length;
+
+  // 🔍 CHIVATO TEMPORAL — quitar una vez diagnosticado el bug de fecha_cierre
+  const colFechaCierre = headers.indexOf('fecha_cierre');
+  Logger.log(`🔍 [reordenar] data.length-1 (filas físicas con algo)=${data.length - 1} | filasDatos.length (filtradas por bill_mews)=${filasDatos.length}`);
+  if (data.length - 1 !== filasDatos.length) {
+    Logger.log('⚠️ [reordenar] DESAJUSTE: hay filas físicas sin bill_mews que se están excluyendo del rango a reescribir.');
+  }
+  Logger.log('🔍 [reordenar] Primeras 3 filas del array ordenado (bill_mews | fecha_cierre):');
+  filasDatos.slice(0, 3).forEach(f => Logger.log(`   ${f[colBill]} | ${f[colFechaCierre]}`));
+  Logger.log('🔍 [reordenar] Últimas 5 filas del array ordenado (bill_mews | fecha_cierre) — aquí caen las PB:');
+  filasDatos.slice(-5).forEach(f => Logger.log(`   ${f[colBill]} | ${f[colFechaCierre]}`));
+  const idxPB2573 = filasDatos.findIndex(f => String(f[colBill]).includes('2573'));
+  if (idxPB2573 >= 0) {
+    Logger.log(`🔍 [reordenar] PAYMENT BILL 2573 encontrada en posición ${idxPB2573} del array (fila física destino ${idxPB2573 + 2}) | fecha_cierre=${filasDatos[idxPB2573][colFechaCierre]}`);
+  } else {
+    Logger.log('🔍 [reordenar] PAYMENT BILL 2573 NO aparece en filasDatos (¿se filtró por no tener bill_mews, o el texto no coincide?).');
+  }
+
   wsFact.getRange(2, 1, filasDatos.length, numCols).setValues(filasDatos);
 
   actualizarHuecos(filasDatos, headers);
