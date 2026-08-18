@@ -64,9 +64,24 @@ function parsearClosed(data) {
       Logger.log('SKIP bill sin serie: ' + bill);
       continue;
     }
+    const esPB = billTypeCode === 'PB';
+
+    // Las PAYMENT BILL nunca se envían a Odoo (siempre netean a 0, ya
+    // se marcaban como SKIP_PB) y ya se excluían de la detección de
+    // huecos — así que no aportan nada quedándose en FACTURAS. Se
+    // saltan aquí del todo: ni fila en FACTURAS ni en LINEAS, solo
+    // constancia en el log de ejecución. Efecto colateral bueno: al
+    // no escribirse nunca, quedan fuera para siempre del array que
+    // reordenarYRecalcularContinuidad() reordena/reescribe en cada
+    // importación — eliminando de raíz cualquier interacción entre
+    // ellas y las bills nuevas cerca del final del orden.
+    if (esPB) {
+      Logger.log(`SKIP Payment Bill (no se importa a Odoo, no se registra en FACTURAS): ${bill}`);
+      continue;
+    }
+
     const billOdoo = formatearNumeroFactura(bill, serie, cfg);
 
-    const esPB = billTypeCode === 'PB';
     const importeTotal = lineas.reduce((s, l) => s + (parseFloat(l['Amount']) || 0), 0);
     // Associated tax ID es el NIF principal; Owner tax ID es el
     // respaldo si el primero viene vacío (se perdía en la reescritura
@@ -85,7 +100,6 @@ function parsearClosed(data) {
     const associatedProfile = String(primeraLinea['Associated profile'] || '').trim();
     const vatRate = String(primeraLinea['VAT rate']);
     const reservationNum = String(primeraLinea['Reservation number'] || '').trim();
-    const estado = esPB ? 'SKIP_PB' : 'PENDIENTE';
     const numFactura = extraerNumeroFactura(bill);
     const { localizador, agencia } = buscarLocalizador(reservationNum);
 
@@ -94,7 +108,7 @@ function parsearClosed(data) {
       reservationNum, localizador, agencia,
       clienteNif, clienteNombre, '',
       lineas.length, importeTotal.toFixed(2), vatRate,
-      '', estado, '', '', esPB ? 'Payment Bill — suma 0, no se importa a Odoo' : '',
+      '', 'PENDIENTE', '', '', '',
       associatedProfile
     ]);
 
@@ -133,12 +147,6 @@ function parsearClosed(data) {
   if (nuevasFacturas.length > 0) {
     appendRows(wsFact, nuevasFacturas);
     appendRows(wsLin, nuevasLineas);
-
-    // 🔍 CHIVATO TEMPORAL — quitar una vez diagnosticado el bug de fecha_cierre
-    Logger.log('🔍 [parsearClosed] Facturas nuevas escritas por appendRows:');
-    nuevasFacturas.forEach(f => {
-      Logger.log(`   bill_mews=${f[0]} | fecha_cierre=${f[4]}`);
-    });
   }
 
   reordenarYRecalcularContinuidad();
@@ -380,6 +388,23 @@ function crearDocumentosAjuste555(paraCrear, cfg) {
   }
 }
 
+// Quita cualquier filtro normal (Datos → Crear un filtro) activo en
+// la pestaña, si lo hay. No afecta a "vistas de filtro" (esas son
+// puramente visuales y no pueden interferir). Se llama al principio
+// de procesarJsonsDeDriveCore, tras coger el lock, para que ningún
+// reordenamiento manual desde la UI (las flechitas de ordenar del
+// filtro) pueda solaparse con la lectura/escritura del script
+// mientras procesa. No corrige ningún bug confirmado por sí sola —
+// es una medida defensiva, para eliminar esa variable de la ecuación.
+function quitarFiltroSiExiste(ws) {
+  if (!ws) return;
+  const filtro = ws.getFilter();
+  if (filtro) {
+    filtro.remove();
+    Logger.log(`🧹 Filtro activo eliminado de la pestaña "${ws.getName()}" antes de procesar.`);
+  }
+}
+
 // ── 2. Procesar todos los JSONs pendientes en Drive ────────────────
 function procesarJsonsDeDrive() {
   const ui = SpreadsheetApp.getUi();
@@ -447,6 +472,10 @@ function procesarJsonsDeDriveCore(pendientes) {
   }
 
   try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    quitarFiltroSiExiste(ss.getSheetByName(TAB.FACTURAS));
+    quitarFiltroSiExiste(ss.getSheetByName(TAB.LINEAS));
+
     const cfg = getConfig();
     const procesadosId = cfg['FOLDER_ID_PROCESADOS'];
     const carpetaProcesados = procesadosId ? DriveApp.getFolderById(procesadosId) : null;
@@ -749,6 +778,16 @@ function extraerSerie(bill) {
 }
 
 // ── Continuidad y huecos de numeración ─────────────────────────────
+// IMPORTANTE (cambio): esta función YA NO reordena físicamente
+// FACTURAS. Antes, cada llamada reescribía las 20 columnas de TODA
+// la hoja en el orden serie+número (con las PAYMENT BILL siempre al
+// final) — caro con miles de filas, y la causa de que filas físicas
+// "viajaran" de posición en cada importación. El cálculo de huecos
+// SIGUE necesitando los datos ordenados, así que se ordena una COPIA
+// en memoria solo para ese cálculo — pero el resultado (columna
+// "continuidad") se escribe de vuelta en la posición física
+// ORIGINAL de cada fila, sin tocar ninguna otra columna ni mover
+// nada. FACTURAS queda siempre en orden de inserción (cronológico).
 function reordenarYRecalcularContinuidad() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const wsFact = ss.getSheetByName(TAB.FACTURAS);
@@ -761,22 +800,32 @@ function reordenarYRecalcularContinuidad() {
   const colCont = headers.indexOf('continuidad');
   const colBill = headers.indexOf('bill_mews');
 
-  // Todo lo que hay debajo de la cabecera (fila 1) con bill_mews
-  // relleno cuenta como dato real — sin asumir ninguna fila "reservada".
-  const filasDatos = data.slice(1).filter(r => r[colBill]);
-  if (filasDatos.length === 0) return;
+  // Copia con el índice físico original (0-based dentro de data.slice(1),
+  // fila real en la hoja = filaOriginal + 2) — así, tras ordenar la
+  // copia para el cálculo, sabemos exactamente dónde escribir cada
+  // resultado sin mover nada.
+  const filasConIndice = data.slice(1)
+    .map((fila, i) => ({ fila, filaOriginal: i }))
+    .filter(f => f.fila[colBill]);
+  if (filasConIndice.length === 0) return;
 
-  filasDatos.sort((a, b) => {
-    const serieA = String(a[colSerie] || ''), serieB = String(b[colSerie] || '');
+  filasConIndice.sort((a, b) => {
+    const serieA = String(a.fila[colSerie] || ''), serieB = String(b.fila[colSerie] || '');
     const esPB_A = serieA === 'PB', esPB_B = serieB === 'PB';
     if (esPB_A && !esPB_B) return 1;
     if (!esPB_A && esPB_B) return -1;
     if (serieA !== serieB) return serieA.localeCompare(serieB);
-    return (parseInt(a[colNum]) || 0) - (parseInt(b[colNum]) || 0);
+    return (parseInt(a.fila[colNum]) || 0) - (parseInt(b.fila[colNum]) || 0);
   });
 
+  // Columna "continuidad" a escribir de vuelta, indexada por posición
+  // física original — por defecto se deja el valor que ya tuviera
+  // cada fila (para las filas sin bill_mews, que no pasan por este
+  // cálculo, no se toca nada).
+  const columnaContinuidad = data.slice(1).map(fila => fila[colCont]);
+
   const ultimoPorSerie = {};
-  for (const fila of filasDatos) {
+  for (const { fila, filaOriginal } of filasConIndice) {
     const serie = String(fila[colSerie] || '');
     const num = parseInt(fila[colNum]) || 0;
     const billMews = String(fila[colBill] || '');
@@ -792,41 +841,25 @@ function reordenarYRecalcularContinuidad() {
     const bucket = numeracionPropia ? `${serie}::PROPIA` : serie;
     const sufijo = numeracionPropia ? ' (numeración propia)' : '';
 
-    if (esPB || !serie || serie === 'PB') { fila[colCont] = '—'; continue; }
+    if (esPB || !serie || serie === 'PB') { columnaContinuidad[filaOriginal] = '—'; continue; }
 
     if (ultimoPorSerie[bucket] === undefined) {
-      fila[colCont] = '🆕 primera' + sufijo;
+      columnaContinuidad[filaOriginal] = '🆕 primera' + sufijo;
     } else {
       const esperado = ultimoPorSerie[bucket] + 1;
-      if (num === esperado) fila[colCont] = '✅' + sufijo;
-      else if (num > esperado) fila[colCont] = `⚠️ salto: falta ${esperado}→${num - 1}` + sufijo;
-      else fila[colCont] = `⚠️ duplicado o anterior` + sufijo;
+      if (num === esperado) columnaContinuidad[filaOriginal] = '✅' + sufijo;
+      else if (num > esperado) columnaContinuidad[filaOriginal] = `⚠️ salto: falta ${esperado}→${num - 1}` + sufijo;
+      else columnaContinuidad[filaOriginal] = `⚠️ duplicado o anterior` + sufijo;
     }
     ultimoPorSerie[bucket] = num;
   }
 
-  const numCols = headers.length;
+  // Solo se escribe la columna "continuidad", una sola columna x
+  // todas las filas — no las 20 columnas de toda la hoja como antes.
+  wsFact.getRange(2, colCont + 1, columnaContinuidad.length, 1)
+    .setValues(columnaContinuidad.map(v => [v]));
 
-  // 🔍 CHIVATO TEMPORAL — quitar una vez diagnosticado el bug de fecha_cierre
-  const colFechaCierre = headers.indexOf('fecha_cierre');
-  Logger.log(`🔍 [reordenar] data.length-1 (filas físicas con algo)=${data.length - 1} | filasDatos.length (filtradas por bill_mews)=${filasDatos.length}`);
-  if (data.length - 1 !== filasDatos.length) {
-    Logger.log('⚠️ [reordenar] DESAJUSTE: hay filas físicas sin bill_mews que se están excluyendo del rango a reescribir.');
-  }
-  Logger.log('🔍 [reordenar] Primeras 3 filas del array ordenado (bill_mews | fecha_cierre):');
-  filasDatos.slice(0, 3).forEach(f => Logger.log(`   ${f[colBill]} | ${f[colFechaCierre]}`));
-  Logger.log('🔍 [reordenar] Últimas 5 filas del array ordenado (bill_mews | fecha_cierre) — aquí caen las PB:');
-  filasDatos.slice(-5).forEach(f => Logger.log(`   ${f[colBill]} | ${f[colFechaCierre]}`));
-  const idxPB2573 = filasDatos.findIndex(f => String(f[colBill]).includes('2573'));
-  if (idxPB2573 >= 0) {
-    Logger.log(`🔍 [reordenar] PAYMENT BILL 2573 encontrada en posición ${idxPB2573} del array (fila física destino ${idxPB2573 + 2}) | fecha_cierre=${filasDatos[idxPB2573][colFechaCierre]}`);
-  } else {
-    Logger.log('🔍 [reordenar] PAYMENT BILL 2573 NO aparece en filasDatos (¿se filtró por no tener bill_mews, o el texto no coincide?).');
-  }
-
-  wsFact.getRange(2, 1, filasDatos.length, numCols).setValues(filasDatos);
-
-  actualizarHuecos(filasDatos, headers);
+  actualizarHuecos(filasConIndice.map(f => f.fila), headers);
 }
 
 function actualizarHuecos(filasDatos, headers) {
