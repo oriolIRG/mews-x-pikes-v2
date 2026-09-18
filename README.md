@@ -289,6 +289,12 @@ haga referencia directa a `item['Type']`, `item['Bill']`, etc.
   cero, se crea automáticamente un documento a 0€ contra la cuenta de redondeo (555); si no
   netean a cero, es un error operativo real (dinero sin factura) y se avisa en
   `HUECOS_NUMERACION` sin inventar nada.
+- **Transformación cabecera/líneas**: el JSON de Mews trae items en bruto, sin agrupar — cada
+  item con su `Bill`, `Code`, `VAT rate`, `Net`, `VAT`, `Amount`. El script agrupa en dos
+  niveles: por `Bill` → una fila de cabecera en `FACTURAS` (con el importe total sumado); y
+  dentro de cada bill, por `(Code, VAT rate)` → las líneas de `FACTURAS_LINEAS`, sumando
+  `net`/`vat_amount`/`amount_bruto` de los items que compartan ambas claves. Agrupar solo por
+  `Code` mezclaría líneas con IVA distinto, de ahí la clave compuesta.
 - **Envío a Odoo** (`importarFacturasCore`, botón "2️⃣ Enviar facturas a Odoo"): idempotente por
   `name` + `move_type` + `company_id`; resuelve el cliente vía `resolverPartner()`; comprueba el
   cuadre Gross automáticamente al crear cada factura.
